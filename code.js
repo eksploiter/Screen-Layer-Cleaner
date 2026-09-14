@@ -7,33 +7,38 @@ figma.showUI(__html__, {
 
 /* =========================================================
    SCREEN LAYER CLEANER
-   STABLE VISUAL-PRESERVATION VERSION
+   STABLE ATOMIC TRANSACTION VERSION
 
-   ---------------------------------------------------------
    제1법칙
    ---------------------------------------------------------
-   디자인 화면의 실제 Render 결과를 변경하지 않는다.
+   디자인 화면의 Render는 변경하지 않는다.
 
-   위험 작업:
+   변경 가능 작업:
    - Garbage 삭제
    - Instance Detach
    - Root → Frame
-   - Mask / Clip Bake
+   - Mask / Clip → screenshot
    - Frame / Group / Auto Layout Flatten
-   - Layer Order
    - Font → Inter
+   - Layer Order
 
-   모두 작업용 Clone에서 실행.
+   위 작업들은 각각:
 
-   작업 전후 Screen PNG가 동일:
-     → 작업 확정
+   BEFORE
+   ↓
+   작업
+   ↓
+   AFTER
+   ↓
+   Render 동일 → 확정
+   Render 다름 → 해당 작업만 Rollback
 
-   달라짐:
-     → 해당 작업만 Rollback
-
-   Naming:
-     → Visual에 영향이 없으므로 직접 적용
-
+   중요:
+   ---------------------------------------------------------
+   - Screen 전체 Final Rollback 제거
+   - Original ↔ Clone PNG 비교 제거
+   - 현재 작업본의 BEFORE ↔ AFTER만 비교
+   - Naming은 Render에 영향을 주지 않으므로 직접 적용
 ========================================================= */
 
 
@@ -45,15 +50,7 @@ let renameTextToHyphen = false;
 let convertFontToInter = false;
 
 let approvedGarbageIds = new Set();
-
-/*
- * Analyze Screen을 누른 시점의 Root.
- *
- * Garbage "보기"를 눌러 Canvas selection이 바뀌어도
- * 실제 Clean 대상은 유지한다.
- */
 let analyzedRootIds = [];
-
 
 const WORK_OFFSET_X = 30000;
 const CHECKPOINT_OFFSET_X = 60000;
@@ -66,7 +63,7 @@ const MAX_FLATTEN_PASSES = 30;
 
 
 /* =========================================================
-   INTERNAL PLUGIN DATA
+   INTERNAL DATA
 ========================================================= */
 
 const PD_GARBAGE_ID =
@@ -124,9 +121,6 @@ function createStats() {
 
     preservedAreas: 0,
 
-    /*
-     * 기존 UI 호환
-     */
     visualShells: 0,
     bakedAreas: 0,
 
@@ -151,24 +145,19 @@ function addReport(
   const entry = {
     action,
     status,
-
     node:
       node && isAlive(node)
         ? safeName(node)
         : "",
-
     type:
       node && isAlive(node)
         ? safeType(node)
         : "",
-
     reason:
       reason || ""
   };
 
-
   stats.report.push(entry);
-
 
   const symbol =
     status === "SUCCESS"
@@ -176,7 +165,6 @@ function addReport(
       : status === "SKIPPED"
         ? "→"
         : "✕";
-
 
   console.log(
     `[Screen Layer Cleaner] ${symbol} ${action}`,
@@ -195,7 +183,6 @@ function safeType(node) {
     return node
       ? node.type
       : null;
-
   } catch (_) {
     return null;
   }
@@ -207,7 +194,6 @@ function safeName(node) {
     return node
       ? node.name
       : "";
-
   } catch (_) {
     return "";
   }
@@ -219,7 +205,6 @@ function safeId(node) {
     return node
       ? node.id
       : null;
-
   } catch (_) {
     return null;
   }
@@ -231,7 +216,6 @@ function safeParent(node) {
     return node
       ? node.parent
       : null;
-
   } catch (_) {
     return null;
   }
@@ -243,10 +227,8 @@ function isAlive(node) {
     return false;
   }
 
-
   try {
     return !!node.parent;
-
   } catch (_) {
     return false;
   }
@@ -258,14 +240,10 @@ function childrenOf(node) {
     return [];
   }
 
-
   try {
-    if (
-      !("children" in node)
-    ) {
+    if (!("children" in node)) {
       return [];
     }
-
 
     return [
       ...node.children
@@ -283,7 +261,6 @@ function safeBounds(node) {
       node.absoluteBoundingBox ||
       null
     );
-
   } catch (_) {
     return null;
   }
@@ -297,7 +274,6 @@ function safeRenderBounds(node) {
       node.absoluteBoundingBox ||
       null
     );
-
   } catch (_) {
     return null;
   }
@@ -307,7 +283,6 @@ function safeRenderBounds(node) {
 function safeTransform(node) {
   try {
     return node.absoluteTransform;
-
   } catch (_) {
     return null;
   }
@@ -319,10 +294,8 @@ function safeRemove(node) {
     return false;
   }
 
-
   try {
     node.remove();
-
     return true;
 
   } catch (error) {
@@ -338,13 +311,12 @@ function safeRemove(node) {
 
 
 /* =========================================================
-   TYPE HELPERS
+   NODE TYPES
 ========================================================= */
 
 function isContainer(node) {
   const type =
     safeType(node);
-
 
   return (
     type === "FRAME" ||
@@ -364,7 +336,6 @@ function isAutoLayout(node) {
   if (!isAlive(node)) {
     return false;
   }
-
 
   try {
     return (
@@ -415,29 +386,17 @@ function multiplyTransform(
 
 
 function invertTransform(m) {
-  const a =
-    m[0][0];
+  const a = m[0][0];
+  const c = m[0][1];
+  const e = m[0][2];
 
-  const c =
-    m[0][1];
-
-  const e =
-    m[0][2];
-
-  const b =
-    m[1][0];
-
-  const d =
-    m[1][1];
-
-  const f =
-    m[1][2];
-
+  const b = m[1][0];
+  const d = m[1][1];
+  const f = m[1][2];
 
   const det =
     a * d -
     b * c;
-
 
   if (
     Math.abs(det) <
@@ -448,10 +407,8 @@ function invertTransform(m) {
     );
   }
 
-
   const inv =
     1 / det;
-
 
   return [
     [
@@ -476,13 +433,11 @@ function absoluteToRelative(
   const parentTransform =
     safeTransform(parent);
 
-
   if (!parentTransform) {
     throw new Error(
       "Parent transform unavailable."
     );
   }
-
 
   return multiplyTransform(
     invertTransform(
@@ -505,7 +460,6 @@ function getPD(
     return "";
   }
 
-
   try {
     return (
       node.getPluginData(key) ||
@@ -527,13 +481,11 @@ function setPD(
     return;
   }
 
-
   try {
     node.setPluginData(
       key,
       value
     );
-
   } catch (_) {}
 }
 
@@ -541,21 +493,19 @@ function setPD(
 function clearInternalPluginData(
   root
 ) {
+  const keys = [
+    PD_GARBAGE_ID,
+    PD_CURRENT_OP,
+    PD_SKIP_DETACH,
+    PD_SKIP_SCREENSHOT,
+    PD_SKIP_FLATTEN,
+    PD_INTER_DONE
+  ];
+
   function walk(node) {
     if (!isAlive(node)) {
       return;
     }
-
-
-    const keys = [
-      PD_GARBAGE_ID,
-      PD_CURRENT_OP,
-      PD_SKIP_DETACH,
-      PD_SKIP_SCREENSHOT,
-      PD_SKIP_FLATTEN,
-      PD_INTER_DONE
-    ];
-
 
     for (
       const key of keys
@@ -567,7 +517,6 @@ function clearInternalPluginData(
       );
     }
 
-
     for (
       const child of
       childrenOf(node)
@@ -575,7 +524,6 @@ function clearInternalPluginData(
       walk(child);
     }
   }
-
 
   walk(root);
 }
@@ -589,7 +537,6 @@ function findByPluginData(
   let found =
     null;
 
-
   function walk(node) {
     if (
       found ||
@@ -597,7 +544,6 @@ function findByPluginData(
     ) {
       return;
     }
-
 
     if (
       getPD(
@@ -611,13 +557,11 @@ function findByPluginData(
       return;
     }
 
-
     for (
       const child of
       childrenOf(node)
     ) {
       walk(child);
-
 
       if (found) {
         return;
@@ -625,22 +569,19 @@ function findByPluginData(
     }
   }
 
-
   walk(root);
-
 
   return found;
 }
 
 
 /* =========================================================
-   PATH
+   ORIGINAL → CLONE PATH
 ========================================================= */
 
 function createPathMap(root) {
   const map =
     new Map();
-
 
   function walk(
     node,
@@ -650,10 +591,8 @@ function createPathMap(root) {
       return;
     }
 
-
     const id =
       safeId(node);
-
 
     if (id) {
       map.set(
@@ -662,10 +601,8 @@ function createPathMap(root) {
       );
     }
 
-
     const children =
       childrenOf(node);
-
 
     for (
       let i = 0;
@@ -682,12 +619,10 @@ function createPathMap(root) {
     }
   }
 
-
   walk(
     root,
     []
   );
-
 
   return map;
 }
@@ -700,45 +635,40 @@ function resolvePath(
   let current =
     root;
 
-
   for (
     const index of path
   ) {
     const children =
       childrenOf(current);
 
-
     if (
       index < 0 ||
-      index >= children.length
+      index >=
+        children.length
     ) {
       return null;
     }
 
-
     current =
       children[index];
-
 
     if (!isAlive(current)) {
       return null;
     }
   }
 
-
   return current;
 }
 
 
 /* =========================================================
-   PNG VISUAL CHECK
+   RENDER EXPORT
 ========================================================= */
 
 async function exportNodePng(node) {
   if (!isAlive(node)) {
     return null;
   }
-
 
   try {
     return await node.exportAsync({
@@ -761,11 +691,26 @@ async function exportNodePng(node) {
       error
     );
 
-
     return null;
   }
 }
 
+
+/* =========================================================
+   BYTE COMPARE
+   ---------------------------------------------------------
+   IMPORTANT
+
+   더 이상 Original ↔ Clone이나
+   마지막 전체 Screen 판정에 사용하지 않는다.
+
+   동일한 Working Root의
+   "바로 직전 Export ↔ 바로 직후 Export"
+   비교에만 사용한다.
+
+   따라서 이전처럼 Clone 생성/Final Export 차이 때문에
+   Screen 전체가 Rollback 되는 문제를 제거한다.
+========================================================= */
 
 function sameBytes(
   a,
@@ -778,14 +723,12 @@ function sameBytes(
     return false;
   }
 
-
   if (
     a.length !==
     b.length
   ) {
     return false;
   }
-
 
   for (
     let i = 0;
@@ -800,84 +743,88 @@ function sameBytes(
     }
   }
 
-
   return true;
 }
 
 
 /* =========================================================
-   WORKING COPY
+   WORKING STATE
 ========================================================= */
 
 async function createWorkingState(
   originalRoot
 ) {
-  const baseline =
-    await exportNodePng(
-      originalRoot
-    );
-
-
-  if (!baseline) {
-    throw new Error(
-      "원본 Screen PNG 생성 실패"
-    );
-  }
-
+  /*
+   * ★ 변경
+   *
+   * Original PNG와 Clone PNG를 비교하지 않는다.
+   *
+   * Figma clone()은 구조 복제이고,
+   * 실제 위험 작업은 이후 Atomic Transaction에서
+   * 하나씩 검증한다.
+   */
 
   const clone =
     originalRoot.clone();
-
 
   figma.currentPage.appendChild(
     clone
   );
 
-
   clone.x =
     originalRoot.x +
     WORK_OFFSET_X;
 
-
   clone.y =
     originalRoot.y;
 
-
-  const clonedPng =
+  /*
+   * Export가 가능한 Clone인지만 확인.
+   */
+  const initial =
     await exportNodePng(
       clone
     );
 
-
-  if (
-    !clonedPng ||
-    !sameBytes(
-      baseline,
-      clonedPng
-    )
-  ) {
+  if (!initial) {
     safeRemove(clone);
 
-
     throw new Error(
-      "작업용 Clone이 원본과 동일하게 렌더되지 않습니다."
+      "작업용 Screen을 Render할 수 없습니다."
     );
   }
 
-
   return {
     root:
-      clone,
-
-    baseline
+      clone
   };
 }
 
 
 /* =========================================================
-   VISUAL TRANSACTION
+   ATOMIC VISUAL TRANSACTION
 ========================================================= */
 
+/*
+ * ★ 이번 안정화의 핵심
+ *
+ * OLD:
+ *
+ * Original baseline
+ * vs
+ * 모든 변경 이후 Working
+ *
+ *
+ * NEW:
+ *
+ * Current Working BEFORE
+ * vs
+ * Current Working AFTER
+ *
+ *
+ * 즉 해당 Operation 하나가
+ * 실제 화면을 바꿨는지만 검사한다.
+ */
 async function runVisualTransaction(
   state,
   mutate
@@ -899,24 +846,50 @@ async function runVisualTransaction(
   }
 
 
-  const workRoot =
+  const currentRoot =
     state.root;
 
 
-  const workX =
-    workRoot.x;
+  /*
+   * 현재 상태 Snapshot.
+   */
+  const before =
+    await exportNodePng(
+      currentRoot
+    );
 
-  const workY =
-    workRoot.y;
+
+  if (!before) {
+    return {
+      accepted:
+        false,
+
+      attempted:
+        false,
+
+      reason:
+        "before-render-failed"
+    };
+  }
 
 
+  /*
+   * Rollback용 Clone.
+   */
   let checkpoint =
     null;
 
 
+  const rootX =
+    currentRoot.x;
+
+  const rootY =
+    currentRoot.y;
+
+
   try {
     checkpoint =
-      workRoot.clone();
+      currentRoot.clone();
 
 
     figma.currentPage.appendChild(
@@ -925,12 +898,12 @@ async function runVisualTransaction(
 
 
     checkpoint.x =
-      workX +
+      rootX +
       CHECKPOINT_OFFSET_X;
 
 
     checkpoint.y =
-      workY;
+      rootY;
 
   } catch (error) {
     if (
@@ -962,13 +935,14 @@ async function runVisualTransaction(
   try {
     mutationResult =
       await mutate(
-        workRoot
+        currentRoot
       );
 
   } catch (error) {
 
     /*
-     * 해당 Operation Rollback.
+     * Operation Error
+     * → 즉시 해당 작업만 Rollback.
      */
     if (
       state.root &&
@@ -981,10 +955,10 @@ async function runVisualTransaction(
 
 
     checkpoint.x =
-      workX;
+      rootX;
 
     checkpoint.y =
-      workY;
+      rootY;
 
 
     state.root =
@@ -1006,13 +980,6 @@ async function runVisualTransaction(
   }
 
 
-  const changed =
-    !!(
-      mutationResult &&
-      mutationResult.changed
-    );
-
-
   if (
     mutationResult &&
     mutationResult.root &&
@@ -1025,7 +992,85 @@ async function runVisualTransaction(
   }
 
 
-  if (!changed) {
+  const changed =
+    !!(
+      mutationResult &&
+      mutationResult.changed
+    );
+
+
+  /*
+   * Mutation 함수가 아무것도 안 했다고 했더라도
+   * 실제로는 예상치 못한 변경이 있었는지 검사한다.
+   */
+  const after =
+    await exportNodePng(
+      state.root
+    );
+
+
+  if (!after) {
+
+    /*
+     * Render 자체가 안 되면 Rollback.
+     */
+    if (
+      state.root &&
+      isAlive(state.root)
+    ) {
+      safeRemove(
+        state.root
+      );
+    }
+
+
+    checkpoint.x =
+      rootX;
+
+    checkpoint.y =
+      rootY;
+
+
+    state.root =
+      checkpoint;
+
+
+    return {
+      accepted:
+        false,
+
+      attempted:
+        true,
+
+      reason:
+        "after-render-failed",
+
+      data:
+        mutationResult
+    };
+  }
+
+
+  /*
+   * BEFORE === AFTER
+   *
+   * 화면 변화 없음.
+   */
+  const visuallySame =
+    sameBytes(
+      before,
+      after
+    );
+
+
+  /*
+   * changed:false + 화면도 동일
+   * → No-op.
+   */
+  if (
+    !changed &&
+    visuallySame
+  ) {
     safeRemove(
       checkpoint
     );
@@ -1050,22 +1095,15 @@ async function runVisualTransaction(
   }
 
 
-  const after =
-    await exportNodePng(
-      state.root
-    );
-
-
+  /*
+   * changed:true + 화면 동일
+   *
+   * 정상 Commit.
+   */
   if (
-    after &&
-    sameBytes(
-      state.baseline,
-      after
-    )
+    changed &&
+    visuallySame
   ) {
-    /*
-     * 제1법칙 통과.
-     */
     safeRemove(
       checkpoint
     );
@@ -1088,8 +1126,60 @@ async function runVisualTransaction(
 
 
   /*
+   * changed:false인데 화면은 달라짐.
+   *
+   * 이건 Mutation 함수 내부에서
+   * 우리가 추적하지 못한 변경이 발생한 것.
+   *
+   * 반드시 Rollback.
+   */
+  if (
+    !changed &&
+    !visuallySame
+  ) {
+    if (
+      state.root &&
+      isAlive(state.root)
+    ) {
+      safeRemove(
+        state.root
+      );
+    }
+
+
+    checkpoint.x =
+      rootX;
+
+    checkpoint.y =
+      rootY;
+
+
+    state.root =
+      checkpoint;
+
+
+    return {
+      accepted:
+        false,
+
+      attempted:
+        true,
+
+      reason:
+        "unexpected-mutation",
+
+      data:
+        mutationResult
+    };
+  }
+
+
+  /*
+   * changed:true + 화면 다름
+   *
    * 제1법칙 위반.
-   * 이번 Operation만 취소.
+   *
+   * 해당 작업만 Rollback.
    */
   if (
     state.root &&
@@ -1102,10 +1192,10 @@ async function runVisualTransaction(
 
 
   checkpoint.x =
-    workX;
+    rootX;
 
   checkpoint.y =
-    workY;
+    rootY;
 
 
   state.root =
@@ -1120,9 +1210,7 @@ async function runVisualTransaction(
       true,
 
     reason:
-      after
-        ? "visual-changed"
-        : "render-check-failed",
+      "visual-changed",
 
     data:
       mutationResult
@@ -1201,7 +1289,8 @@ function getGarbageReason(node) {
 
 
   if (
-    safeType(node) === "SLICE"
+    safeType(node) ===
+    "SLICE"
   ) {
     return "Slice Layer";
   }
@@ -1282,14 +1371,14 @@ function collectGarbageItems(root) {
 
 
 /* =========================================================
-   MARK GARBAGE ON CLONE
+   MARK GARBAGE
 ========================================================= */
 
 function markSelectedGarbage(
   originalRoot,
   workRoot
 ) {
-  const map =
+  const pathMap =
     createPathMap(
       originalRoot
     );
@@ -1300,7 +1389,7 @@ function markSelectedGarbage(
     approvedGarbageIds
   ) {
     const path =
-      map.get(id);
+      pathMap.get(id);
 
 
     if (!path) {
@@ -1330,7 +1419,7 @@ function markSelectedGarbage(
 
 
 /* =========================================================
-   COUNT SELECTED GARBAGE IN SUBTREE
+   COUNT MARKED GARBAGE
 ========================================================= */
 
 function countMarkedGarbage(node) {
@@ -1385,7 +1474,7 @@ async function processGarbage(
     let target =
       null;
 
-    let depthFound =
+    let shallowestDepth =
       Infinity;
 
 
@@ -1404,12 +1493,12 @@ async function processGarbage(
           PD_GARBAGE_ID
         ) &&
         getGarbageReason(node) &&
-        depth < depthFound
+        depth < shallowestDepth
       ) {
         target =
           node;
 
-        depthFound =
+        shallowestDepth =
           depth;
       }
 
@@ -1437,23 +1526,24 @@ async function processGarbage(
     }
 
 
-    const garbageId =
+    const originalGarbageId =
       getPD(
         target,
         PD_GARBAGE_ID
       );
 
 
-    const garbageName =
+    const name =
       safeName(target);
 
-    const garbageType =
+    const type =
       safeType(target);
 
-    const reason =
+    const garbageReason =
       getGarbageReason(target);
 
-    const deletedCount =
+
+    const count =
       countMarkedGarbage(
         target
       );
@@ -1475,7 +1565,7 @@ async function processGarbage(
         state,
 
         async root => {
-          const current =
+          const node =
             findByPluginData(
               root,
               PD_CURRENT_OP,
@@ -1483,11 +1573,13 @@ async function processGarbage(
             );
 
 
-          if (!current) {
+          if (!node) {
             return {
               root,
+
               changed:
                 false,
+
               reason:
                 "garbage-not-found"
             };
@@ -1498,7 +1590,7 @@ async function processGarbage(
             root,
 
             changed:
-              safeRemove(current),
+              safeRemove(node),
 
             reason:
               "garbage-delete"
@@ -1511,7 +1603,7 @@ async function processGarbage(
       tx.accepted
     ) {
       stats.removedGarbage +=
-        deletedCount;
+        count;
 
 
       addReport(
@@ -1519,53 +1611,52 @@ async function processGarbage(
         "Garbage Delete",
         "SUCCESS",
         null,
-        `${garbageType} "${garbageName}" 삭제 완료 (${reason})`
+        `${type} "${name}" 삭제 완료 (${garbageReason})`
       );
 
-    } else {
-      stats.protectedGarbage +=
-        deletedCount;
+
+      continue;
+    }
 
 
-      /*
-       * Rollback Root에서 다시 찾은 뒤
-       * 반복 시도 방지.
-       */
-      const restored =
-        findByPluginData(
-          state.root,
-          PD_GARBAGE_ID,
-          garbageId
-        );
+    stats.protectedGarbage +=
+      count;
 
 
-      if (restored) {
-        setPD(
-          restored,
-          PD_GARBAGE_ID,
-          ""
-        );
+    const restored =
+      findByPluginData(
+        state.root,
+        PD_GARBAGE_ID,
+        originalGarbageId
+      );
 
 
-        setPD(
-          restored,
-          PD_CURRENT_OP,
-          ""
-        );
-      }
-
-
-      addReport(
-        stats,
-        "Garbage Delete",
-        "REJECTED",
+    if (restored) {
+      setPD(
         restored,
-        tx.reason ===
-          "visual-changed"
-          ? "삭제하면 실제 화면 Render가 변경되어 해당 Garbage만 유지했습니다."
-          : `삭제 실패: ${tx.reason}`
+        PD_GARBAGE_ID,
+        ""
+      );
+
+
+      setPD(
+        restored,
+        PD_CURRENT_OP,
+        ""
       );
     }
+
+
+    addReport(
+      stats,
+      "Garbage Delete",
+      "REJECTED",
+      restored,
+      tx.reason ===
+        "visual-changed"
+        ? "삭제하면 현재 화면 Render가 변경되어 해당 Garbage만 유지했습니다."
+        : `삭제 실패: ${tx.reason}`
+    );
   }
 }
 
@@ -1578,9 +1669,7 @@ const loadedFonts =
   new Set();
 
 
-async function loadFontOnce(
-  fontName
-) {
+async function loadFontOnce(fontName) {
   if (
     !fontName ||
     fontName === figma.mixed
@@ -1621,11 +1710,10 @@ async function loadFontOnce(
 }
 
 
-async function ensureTextFontsLoaded(
-  node
-) {
+async function ensureTextFontsLoaded(node) {
   if (
-    safeType(node) !== "TEXT"
+    safeType(node) !==
+    "TEXT"
   ) {
     return true;
   }
@@ -1681,16 +1769,15 @@ async function ensureTextFontsLoaded(
 }
 
 
-async function ensureSubtreeFontsLoaded(
-  node
-) {
+async function ensureSubtreeFontsLoaded(node) {
   if (!isAlive(node)) {
     return false;
   }
 
 
   if (
-    safeType(node) === "TEXT"
+    safeType(node) ===
+    "TEXT"
   ) {
     return await ensureTextFontsLoaded(
       node
@@ -1717,7 +1804,7 @@ async function ensureSubtreeFontsLoaded(
 
 
 /* =========================================================
-   INSTANCE
+   INSTANCE DETACH
 ========================================================= */
 
 function collectInstances(root) {
@@ -1751,10 +1838,6 @@ function collectInstances(root) {
       }
 
 
-      /*
-       * Instance 자체부터 Detach하고
-       * 그 내부는 다음 Pass에서 확인.
-       */
       if (
         safeType(child) !==
           "INSTANCE"
@@ -1823,7 +1906,7 @@ async function processInstances(
       }
 
 
-      const originalName =
+      const oldName =
         safeName(node);
 
 
@@ -1858,8 +1941,10 @@ async function processInstances(
             ) {
               return {
                 root,
+
                 changed:
                   false,
+
                 reason:
                   "instance-not-found"
               };
@@ -1899,10 +1984,15 @@ async function processInstances(
           "Instance Detach",
           "SUCCESS",
           null,
-          `"${originalName}" Instance 해제 완료`
+          `"${oldName}" Instance 해제 완료`
         );
 
-      } else if (
+
+        continue;
+      }
+
+
+      if (
         tx.attempted
       ) {
         stats.rejectedInstances++;
@@ -1940,7 +2030,7 @@ async function processInstances(
           restored,
           tx.reason ===
             "visual-changed"
-            ? "Detach 시 실제 Render가 달라져 Instance를 유지했습니다."
+            ? "Instance 해제 시 Render가 변경되어 기존 Instance를 유지했습니다."
             : `Detach 실패: ${tx.reason}`
         );
       }
@@ -1955,7 +2045,7 @@ async function processInstances(
 
 
 /* =========================================================
-   MASK / CLIP
+   MASK
 ========================================================= */
 
 function containsMask(node) {
@@ -1985,6 +2075,10 @@ function containsMask(node) {
 }
 
 
+/* =========================================================
+   CLIP
+========================================================= */
+
 function actuallyClipsChildren(node) {
   if (!isAlive(node)) {
     return false;
@@ -1998,33 +2092,34 @@ function actuallyClipsChildren(node) {
     ) {
       return false;
     }
+
   } catch (_) {
     return false;
   }
 
 
-  const parentBounds =
+  const box =
     safeBounds(node);
 
 
-  if (!parentBounds) {
+  if (!box) {
     return true;
   }
 
 
   const left =
-    parentBounds.x;
+    box.x;
 
   const top =
-    parentBounds.y;
+    box.y;
 
   const right =
-    parentBounds.x +
-    parentBounds.width;
+    box.x +
+    box.width;
 
   const bottom =
-    parentBounds.y +
-    parentBounds.height;
+    box.y +
+    box.height;
 
 
   for (
@@ -2041,28 +2136,28 @@ function actuallyClipsChildren(node) {
     } catch (_) {}
 
 
-    const bounds =
+    const childBox =
       safeRenderBounds(child);
 
 
-    if (!bounds) {
+    if (!childBox) {
       continue;
     }
 
 
     if (
-      bounds.x <
+      childBox.x <
         left - 0.5 ||
 
-      bounds.y <
+      childBox.y <
         top - 0.5 ||
 
-      bounds.x +
-        bounds.width >
+      childBox.x +
+        childBox.width >
         right + 0.5 ||
 
-      bounds.y +
-        bounds.height >
+      childBox.y +
+        childBox.height >
         bottom + 0.5
     ) {
       return true;
@@ -2144,7 +2239,7 @@ function collectScreenshotCandidates(
 
 
 /* =========================================================
-   SCREENSHOT BAKE
+   SCREENSHOT REPLACEMENT
 ========================================================= */
 
 async function replaceWithScreenshot(
@@ -2161,8 +2256,10 @@ async function replaceWithScreenshot(
   ) {
     return {
       root,
+
       changed:
         false,
+
       reason:
         "invalid-parent"
     };
@@ -2182,8 +2279,10 @@ async function replaceWithScreenshot(
   ) {
     return {
       root,
+
       changed:
         false,
+
       reason:
         "invalid-render-bounds"
     };
@@ -2208,8 +2307,10 @@ async function replaceWithScreenshot(
   ) {
     return {
       root,
+
       changed:
         false,
+
       reason:
         "index-invalid"
     };
@@ -2357,7 +2458,7 @@ async function processScreenshots(
       }
 
 
-      const originalName =
+      const oldName =
         safeName(node);
 
 
@@ -2388,8 +2489,10 @@ async function processScreenshots(
             if (!target) {
               return {
                 root,
+
                 changed:
                   false,
+
                 reason:
                   "container-not-found"
               };
@@ -2419,10 +2522,15 @@ async function processScreenshots(
           "Mask / Clip",
           "SUCCESS",
           null,
-          `"${originalName}" → screenshot`
+          `"${oldName}" → screenshot`
         );
 
-      } else if (
+
+        continue;
+      }
+
+
+      if (
         tx.attempted
       ) {
         stats.screenshotRejected++;
@@ -2460,7 +2568,7 @@ async function processScreenshots(
           restored,
           tx.reason ===
             "visual-changed"
-            ? "Screenshot 변환 시 Render 차이가 발생해 기존 구조를 유지했습니다."
+            ? "Screenshot 변환 시 Render가 달라져 기존 구조를 유지했습니다."
             : `Screenshot 변환 실패: ${tx.reason}`
         );
       }
@@ -2551,7 +2659,9 @@ function hasImageFill(node) {
     if (
       !("fills" in node) ||
       node.fills === figma.mixed ||
-      !Array.isArray(node.fills)
+      !Array.isArray(
+        node.fills
+      )
     ) {
       return false;
     }
@@ -2559,8 +2669,10 @@ function hasImageFill(node) {
 
     return node.fills.some(
       fill =>
-        fill.type === "IMAGE" &&
-        fill.visible !== false
+        fill.type ===
+          "IMAGE" &&
+        fill.visible !==
+          false
     );
 
   } catch (_) {
@@ -2625,7 +2737,8 @@ function createVisualShell(
 
   try {
     if (
-      source.fills !== figma.mixed
+      source.fills !==
+      figma.mixed
     ) {
       rect.fills =
         source.fills;
@@ -2635,7 +2748,8 @@ function createVisualShell(
 
   try {
     if (
-      source.strokes !== figma.mixed
+      source.strokes !==
+      figma.mixed
     ) {
       rect.strokes =
         source.strokes;
@@ -2743,10 +2857,8 @@ function isFlattenCandidate(node) {
 
 
   /*
-   * Mask / 실제 Clip 구조는
-   * screenshot 단계에서 처리.
-   *
-   * 실패한 경우 강제 Flatten하지 않는다.
+   * Mask / Real Clip은
+   * screenshot 단계에서 먼저 처리한다.
    */
   if (
     containsMask(node) ||
@@ -2828,13 +2940,13 @@ async function flattenContainerOneLevel(
   root,
   container
 ) {
-  if (
-    !isAlive(container)
-  ) {
+  if (!isAlive(container)) {
     return {
       root,
+
       changed:
         false,
+
       reason:
         "container-missing"
     };
@@ -2851,8 +2963,10 @@ async function flattenContainerOneLevel(
   ) {
     return {
       root,
+
       changed:
         false,
+
       reason:
         "invalid-parent"
     };
@@ -2877,8 +2991,10 @@ async function flattenContainerOneLevel(
   ) {
     return {
       root,
+
       changed:
         false,
+
       reason:
         "index-invalid"
     };
@@ -2890,7 +3006,7 @@ async function flattenContainerOneLevel(
 
 
   /*
-   * Empty Container.
+   * Empty Frame.
    */
   if (
     children.length === 0
@@ -2910,13 +3026,16 @@ async function flattenContainerOneLevel(
         0,
 
       removed:
-        1
+        1,
+
+      shells:
+        0
     };
   }
 
 
   /*
-   * Font 문제 사전 차단.
+   * Text 이동 전 Font load.
    */
   for (
     const child of children
@@ -2960,8 +3079,10 @@ async function flattenContainerOneLevel(
   ) {
     return {
       root,
+
       changed:
         false,
+
       reason:
         "transform-unavailable"
     };
@@ -2971,16 +3092,18 @@ async function flattenContainerOneLevel(
   let insertionIndex =
     index;
 
-
   let shells =
     0;
 
 
   /*
-   * Container 자체의 Visual을 Shape로 보존.
+   * Container 자체 Background/Stroke가 있으면
+   * shape로 보존.
    */
   if (
-    hasOwnVisual(container)
+    hasOwnVisual(
+      container
+    )
   ) {
     const shell =
       createVisualShell(
@@ -3009,16 +3132,14 @@ async function flattenContainerOneLevel(
 
 
     /*
-     * Parent가 Auto Layout이면
-     * 기존 좌표를 지키기 위해 Absolute 배치 시도.
-     *
-     * 실패하거나 화면이 달라지면
-     * Transaction에서 자동 복원.
+     * Parent가 Auto Layout이라면
+     * child를 Absolute로 올려 위치 보존 시도.
      */
     try {
       if (
         isAutoLayout(parent) &&
-        "layoutPositioning" in child
+        "layoutPositioning" in
+          child
       ) {
         child.layoutPositioning =
           "ABSOLUTE";
@@ -3180,6 +3301,8 @@ async function processFlatten(
 
 
         stats.flattenedContainers++;
+
+
         stats.removedContainers +=
           tx.data &&
           tx.data.removed
@@ -3206,10 +3329,18 @@ async function processFlatten(
           "Container Flatten",
           "SUCCESS",
           null,
-          `${nodeType} "${nodeName}" 한 단계 해제 완료`
+          `${nodeType} "${nodeName}" 해제 완료`
         );
 
-      } else if (
+
+        continue;
+      }
+
+
+      /*
+       * 작업을 실제 시도했다가 Reject.
+       */
+      if (
         tx.attempted
       ) {
         stats.flattenRejected++;
@@ -3240,58 +3371,83 @@ async function processFlatten(
         }
 
 
-        addReport(
-          stats,
-          "Container Flatten",
-          "REJECTED",
-          restored,
-          tx.reason ===
-            "visual-changed"
-            ? "Container 해제 시 실제 Render가 변경되어 해당 구조만 유지했습니다."
-            : `Flatten 실패: ${
-                tx.data &&
-                tx.data.reason
-                  ? tx.data.reason
-                  : tx.reason
-              }`
-        );
-
-      } else {
-        const restored =
-          findByPluginData(
-            state.root,
-            PD_CURRENT_OP,
-            marker
-          );
+        let reason =
+          tx.reason;
 
 
-        if (restored) {
-          setPD(
-            restored,
-            PD_SKIP_FLATTEN,
-            "1"
-          );
+        if (
+          reason ===
+          "visual-changed"
+        ) {
+          reason =
+            "Container를 풀면 실제 Render가 변경됨";
 
+        } else if (
+          reason ===
+          "unexpected-mutation"
+        ) {
+          reason =
+            "Flatten 함수가 changed=false를 반환했지만 화면 변화가 감지됨";
 
-          setPD(
-            restored,
-            PD_CURRENT_OP,
-            ""
-          );
+        } else if (
+          tx.data &&
+          tx.data.reason
+        ) {
+          reason =
+            tx.data.reason;
         }
 
 
         addReport(
           stats,
           "Container Flatten",
-          "SKIPPED",
+          "REJECTED",
           restored,
-          tx.data &&
-          tx.data.reason
-            ? tx.data.reason
-            : tx.reason
+          reason
+        );
+
+
+        continue;
+      }
+
+
+      /*
+       * 기술적으로 시도도 못한 경우.
+       */
+      const restored =
+        findByPluginData(
+          state.root,
+          PD_CURRENT_OP,
+          marker
+        );
+
+
+      if (restored) {
+        setPD(
+          restored,
+          PD_SKIP_FLATTEN,
+          "1"
+        );
+
+
+        setPD(
+          restored,
+          PD_CURRENT_OP,
+          ""
         );
       }
+
+
+      addReport(
+        stats,
+        "Container Flatten",
+        "SKIPPED",
+        restored,
+        tx.data &&
+        tx.data.reason
+          ? tx.data.reason
+          : tx.reason
+      );
     }
 
 
@@ -3315,8 +3471,10 @@ async function convertRootToFrame(
   ) {
     return {
       root,
+
       changed:
         false,
+
       reason:
         "already-frame"
     };
@@ -3566,7 +3724,8 @@ async function convertRootToFrame(
   try {
     if (
       "fills" in root &&
-      root.fills !== figma.mixed
+      root.fills !==
+        figma.mixed
     ) {
       frame.fills =
         root.fills;
@@ -3577,7 +3736,8 @@ async function convertRootToFrame(
   try {
     if (
       "strokes" in root &&
-      root.strokes !== figma.mixed
+      root.strokes !==
+        figma.mixed
     ) {
       frame.strokes =
         root.strokes;
@@ -3643,6 +3803,14 @@ async function processRootConversion(
     safeType(state.root) ===
     "FRAME"
   ) {
+    addReport(
+      stats,
+      "Root → Frame",
+      "SKIPPED",
+      state.root,
+      "Already Frame"
+    );
+
     return;
   }
 
@@ -3675,10 +3843,15 @@ async function processRootConversion(
       "Root → Frame",
       "SUCCESS",
       state.root,
-      `${beforeType} 최상위를 Frame으로 변환했습니다.`
+      `${beforeType} → FRAME`
     );
 
-  } else if (
+
+    return;
+  }
+
+
+  if (
     tx.attempted
   ) {
     stats.rootConversionRejected++;
@@ -3692,22 +3865,25 @@ async function processRootConversion(
       state.root,
       tx.reason ===
         "visual-changed"
-        ? "Root를 Frame으로 교체하면 Render가 변경되어 기존 Root를 유지했습니다."
-        : `Root 변환 실패: ${tx.reason}`
-    );
-
-  } else {
-    addReport(
-      stats,
-      "Root → Frame",
-      "SKIPPED",
-      state.root,
-      tx.data &&
-      tx.data.reason
-        ? tx.data.reason
+        ? "Frame 변환 시 실제 Render가 변경됨"
         : tx.reason
     );
+
+
+    return;
   }
+
+
+  addReport(
+    stats,
+    "Root → Frame",
+    "SKIPPED",
+    state.root,
+    tx.data &&
+    tx.data.reason
+      ? tx.data.reason
+      : tx.reason
+  );
 }
 
 
@@ -3734,8 +3910,12 @@ function mapInterStyle(
 
 
   const italic =
-    value.includes("italic") ||
-    value.includes("oblique");
+    value.includes(
+      "italic"
+    ) ||
+    value.includes(
+      "oblique"
+    );
 
 
   let style =
@@ -3750,15 +3930,23 @@ function mapInterStyle(
       "Black";
 
   } else if (
-    value.includes("extra bold") ||
-    value.includes("extrabold")
+    value.includes(
+      "extra bold"
+    ) ||
+    value.includes(
+      "extrabold"
+    )
   ) {
     style =
       "Extra Bold";
 
   } else if (
-    value.includes("semi bold") ||
-    value.includes("semibold")
+    value.includes(
+      "semi bold"
+    ) ||
+    value.includes(
+      "semibold"
+    )
   ) {
     style =
       "Semi Bold";
@@ -3776,8 +3964,12 @@ function mapInterStyle(
       "Medium";
 
   } else if (
-    value.includes("extra light") ||
-    value.includes("extralight")
+    value.includes(
+      "extra light"
+    ) ||
+    value.includes(
+      "extralight"
+    )
   ) {
     style =
       "Extra Light";
@@ -3811,7 +4003,9 @@ function mapInterStyle(
 
 async function loadInterStyle(style) {
   if (
-    loadedInterStyles.has(style)
+    loadedInterStyles.has(
+      style
+    )
   ) {
     return style;
   }
@@ -3826,7 +4020,9 @@ async function loadInterStyle(style) {
     });
 
 
-    loadedInterStyles.add(style);
+    loadedInterStyles.add(
+      style
+    );
 
 
     return style;
@@ -3861,7 +4057,8 @@ async function convertTextNodeToInter(
   node
 ) {
   if (
-    safeType(node) !== "TEXT"
+    safeType(node) !==
+    "TEXT"
   ) {
     return 0;
   }
@@ -3892,7 +4089,8 @@ async function convertTextNodeToInter(
     ) {
       const oldStyle =
         segment.fontName &&
-        segment.fontName !== figma.mixed
+        segment.fontName !==
+          figma.mixed
           ? segment.fontName.style
           : "Regular";
 
@@ -3910,14 +4108,14 @@ async function convertTextNodeToInter(
       }
 
 
-      /*
-       * 이미 Inter라면 Skip.
-       */
       if (
         segment.fontName &&
-        segment.fontName !== figma.mixed &&
-        segment.fontName.family === "Inter" &&
-        segment.fontName.style === newStyle
+        segment.fontName !==
+          figma.mixed &&
+        segment.fontName.family ===
+          "Inter" &&
+        segment.fontName.style ===
+          newStyle
       ) {
         continue;
       }
@@ -3996,7 +4194,6 @@ async function processInter(
       ) {
         find(child);
 
-
         if (target) {
           return;
         }
@@ -4014,7 +4211,7 @@ async function processInter(
     }
 
 
-    const oldName =
+    const name =
       safeName(target);
 
 
@@ -4104,37 +4301,42 @@ async function processInter(
         "Font → Inter",
         "SUCCESS",
         null,
-        `"${oldName}" Inter 변환 완료`
+        `"${name}"`
       );
 
-    } else if (
+
+      continue;
+    }
+
+
+    const restored =
+      findByPluginData(
+        state.root,
+        PD_CURRENT_OP,
+        marker
+      );
+
+
+    if (restored) {
+      setPD(
+        restored,
+        PD_INTER_DONE,
+        "1"
+      );
+
+
+      setPD(
+        restored,
+        PD_CURRENT_OP,
+        ""
+      );
+    }
+
+
+    if (
       tx.attempted
     ) {
       stats.failedFontConversions++;
-
-
-      const restored =
-        findByPluginData(
-          state.root,
-          PD_CURRENT_OP,
-          marker
-        );
-
-
-      if (restored) {
-        setPD(
-          restored,
-          PD_INTER_DONE,
-          "1"
-        );
-
-
-        setPD(
-          restored,
-          PD_CURRENT_OP,
-          ""
-        );
-      }
 
 
       addReport(
@@ -4144,33 +4346,9 @@ async function processInter(
         restored,
         tx.reason ===
           "visual-changed"
-          ? "Inter로 변경하면 실제 글자 Render가 달라져 기존 Font를 유지했습니다."
-          : `Inter 변환 실패: ${tx.reason}`
+          ? "Inter 적용 시 실제 Render가 달라 기존 Font 유지"
+          : tx.reason
       );
-
-    } else {
-      const restored =
-        findByPluginData(
-          state.root,
-          PD_CURRENT_OP,
-          marker
-        );
-
-
-      if (restored) {
-        setPD(
-          restored,
-          PD_INTER_DONE,
-          "1"
-        );
-
-
-        setPD(
-          restored,
-          PD_CURRENT_OP,
-          ""
-        );
-      }
     }
   }
 }
@@ -4242,14 +4420,8 @@ function looksLikeIcon(node) {
     safeName(node);
 
 
-  /*
-   * 이름상 명확한 Icon이면
-   * Instance / Component / Frame이어도 icon.
-   */
   if (
-    looksLikeIconName(
-      name
-    )
+    looksLikeIconName(name)
   ) {
     return true;
   }
@@ -4257,17 +4429,10 @@ function looksLikeIcon(node) {
 
   if (
     type === "VECTOR" ||
-    type === "BOOLEAN_OPERATION" ||
+    type ===
+      "BOOLEAN_OPERATION" ||
     type === "POLYGON" ||
     type === "STAR"
-  ) {
-    return true;
-  }
-
-
-  if (
-    type === "ELLIPSE" &&
-    looksLikeIconName(name)
   ) {
     return true;
   }
@@ -4289,9 +4454,6 @@ function looksLikeLine(node) {
   }
 
 
-  /*
-   * 얇은 Rectangle/Vector Divider도 line으로.
-   */
   if (
     type === "RECTANGLE" ||
     type === "VECTOR"
@@ -4304,24 +4466,17 @@ function looksLikeLine(node) {
 
 
     try {
-      const w =
-        node.width;
-
-      const h =
-        node.height;
-
-
       if (
-        w >= 8 &&
-        h <= 2
+        node.width >= 8 &&
+        node.height <= 2
       ) {
         return true;
       }
 
 
       if (
-        h >= 8 &&
-        w <= 2
+        node.height >= 8 &&
+        node.width <= 2
       ) {
         return true;
       }
@@ -4339,7 +4494,8 @@ function looksLikeScreenshot(
   root
 ) {
   if (
-    safeType(node) !== "RECTANGLE" ||
+    safeType(node) !==
+      "RECTANGLE" ||
     !hasImageFill(node)
   ) {
     return false;
@@ -4399,7 +4555,7 @@ function desiredLayerName(
 
 
   /*
-   * LID는 어떤 Layer Type이든 최우선 보호.
+   * LID 최우선 보호.
    */
   if (
     isLidName(current)
@@ -4421,7 +4577,7 @@ function desiredLayerName(
 
 
   /*
-   * Screenshot
+   * IMAGE
    */
   if (
     type === "RECTANGLE" &&
@@ -4437,7 +4593,7 @@ function desiredLayerName(
 
 
   /*
-   * Line을 Icon보다 먼저 확인.
+   * LINE
    */
   if (
     looksLikeLine(node)
@@ -4447,7 +4603,7 @@ function desiredLayerName(
 
 
   /*
-   * Icon.
+   * ICON
    */
   if (
     looksLikeIcon(node)
@@ -4457,14 +4613,15 @@ function desiredLayerName(
 
 
   /*
-   * Shape.
+   * SHAPE
    */
   if (
     type === "RECTANGLE" ||
     type === "ELLIPSE" ||
     type === "POLYGON" ||
     type === "STAR" ||
-    type === "BOOLEAN_OPERATION" ||
+    type ===
+      "BOOLEAN_OPERATION" ||
     type === "VECTOR"
   ) {
     return "shape";
@@ -4515,7 +4672,7 @@ function processNaming(
     }
 
 
-    const desired =
+    const wanted =
       desiredLayerName(
         node,
         root
@@ -4523,12 +4680,13 @@ function processNaming(
 
 
     if (
-      desired !== null &&
-      desired !== safeName(node)
+      wanted !== null &&
+      wanted !==
+        safeName(node)
     ) {
       try {
         node.name =
-          desired;
+          wanted;
 
 
         stats.renamedLayers++;
@@ -4542,7 +4700,7 @@ function processNaming(
           "Layer Rename",
           "REJECTED",
           node,
-          "Figma가 해당 Layer의 Name 변경을 허용하지 않았습니다."
+          "Figma가 Name 변경을 허용하지 않음"
         );
       }
     }
@@ -4562,7 +4720,7 @@ function processNaming(
 
 
 /* =========================================================
-   ORDER V2
+   ORDER
 ========================================================= */
 
 function getOrderBounds(node) {
@@ -4612,7 +4770,7 @@ function isSameVisualRow(
 
 
   /*
-   * Top Y가 비슷.
+   * Top Y가 유사.
    */
   if (
     Math.abs(
@@ -4674,7 +4832,7 @@ function isSameVisualRow(
 }
 
 
-function orderBoundsOverlap(
+function boundsOverlap(
   a,
   b
 ) {
@@ -4696,7 +4854,7 @@ function orderBoundsOverlap(
 
 
 /* =========================================================
-   BUILD VISUAL ROWS
+   VISUAL ROWS
 ========================================================= */
 
 function buildVisualRows(items) {
@@ -4762,26 +4920,19 @@ function buildVisualRows(items) {
           [item]
       });
 
-
       continue;
     }
 
 
-    let selectedRow =
+    let row =
       null;
 
 
-    /*
-     * 같은 행 탐색.
-     *
-     * Row의 첫 요소만 보는 방식보다 안정적으로,
-     * Row 내부 요소 중 하나라도 같은 Visual Row면 묶는다.
-     */
     for (
-      const row of rows
+      const candidate of rows
     ) {
       if (
-        row.items.some(
+        candidate.items.some(
           existing =>
             existing.bounds &&
             isSameVisualRow(
@@ -4790,16 +4941,16 @@ function buildVisualRows(items) {
             )
         )
       ) {
-        selectedRow =
-          row;
+        row =
+          candidate;
 
         break;
       }
     }
 
 
-    if (!selectedRow) {
-      selectedRow = {
+    if (!row) {
+      row = {
         y:
           item.bounds.y,
 
@@ -4808,20 +4959,18 @@ function buildVisualRows(items) {
       };
 
 
-      rows.push(
-        selectedRow
-      );
+      rows.push(row);
     }
 
 
-    selectedRow.items.push(
+    row.items.push(
       item
     );
 
 
-    selectedRow.y =
+    row.y =
       Math.min(
-        selectedRow.y,
+        row.y,
         item.bounds.y
       );
   }
@@ -4838,7 +4987,7 @@ function buildVisualRows(items) {
 
 
   /*
-   * 같은 행은 좌 → 우.
+   * 같은 줄 좌 → 우.
    */
   for (
     const row of rows
@@ -4906,17 +5055,9 @@ function buildVisualRows(items) {
 
 
 /* =========================================================
-   TOPOLOGICAL Z-ORDER SORT
+   SAFE PANEL ORDER
 ========================================================= */
 
-/*
- * 원하는 순서:
- * 위 → 아래 / 좌 → 우
- *
- * 단,
- * 실제로 겹치는 Layer끼리는 현재 Z-order를
- * 절대 뒤집지 않는다.
- */
 function buildSafeDesiredPanelOrder(
   root
 ) {
@@ -4924,6 +5065,10 @@ function buildSafeDesiredPanelOrder(
     childrenOf(root);
 
 
+  /*
+   * Figma Layer panel은
+   * children 역순.
+   */
   const currentPanel =
     [...children]
       .reverse();
@@ -4960,20 +5105,20 @@ function buildSafeDesiredPanelOrder(
     );
 
 
-  const desired =
+  const visualOrder =
     [];
 
 
   for (
     const row of rows
   ) {
-    desired.push(
+    visualOrder.push(
       ...row.items
     );
   }
 
 
-  desired.forEach(
+  visualOrder.forEach(
     (item, index) => {
       item.desiredRank =
         index;
@@ -4982,10 +5127,8 @@ function buildSafeDesiredPanelOrder(
 
 
   /*
-   * 겹치는 Layer끼리는 현재 Panel 순서 Constraint.
-   *
-   * i가 현재 더 위에 있으면
-   * i → j edge.
+   * 겹치는 Layer는
+   * 기존 Z-order를 constraint로 유지.
    */
   for (
     let i = 0;
@@ -5005,7 +5148,7 @@ function buildSafeDesiredPanelOrder(
 
 
       if (
-        orderBoundsOverlap(
+        boundsOverlap(
           front.bounds,
           back.bounds
         )
@@ -5021,12 +5164,6 @@ function buildSafeDesiredPanelOrder(
   }
 
 
-  /*
-   * Topological Sort.
-   *
-   * 동시에 선택 가능한 Node 중
-   * 원하는 위치순 Rank가 가장 빠른 걸 먼저 선택.
-   */
   const available =
     items.filter(
       item =>
@@ -5043,15 +5180,15 @@ function buildSafeDesiredPanelOrder(
   ) {
     available.sort(
       (a, b) => {
-        const rankDiff =
+        const rank =
           a.desiredRank -
           b.desiredRank;
 
 
         if (
-          rankDiff !== 0
+          rank !== 0
         ) {
-          return rankDiff;
+          return rank;
         }
 
 
@@ -5090,9 +5227,6 @@ function buildSafeDesiredPanelOrder(
   }
 
 
-  /*
-   * 혹시 Cycle 발생.
-   */
   if (
     output.length !==
     items.length
@@ -5126,11 +5260,8 @@ async function reorderRootLayers(
 
 
   /*
-   * Root Auto Layout에서는
-   * Child Order = Layout Order.
-   *
-   * Layer Panel을 바꾸려고 실제 Canvas 위치가 바뀌면 안 되므로
-   * 여기서는 건드리지 않는다.
+   * Auto Layout Root 순서를 실제로 바꾸면
+   * 화면 Layout이 변할 수 있으므로 Skip.
    */
   if (
     isAutoLayout(root)
@@ -5166,13 +5297,13 @@ async function reorderRootLayers(
   }
 
 
-  const desiredPanel =
+  const panelOrder =
     buildSafeDesiredPanelOrder(
       root
     );
 
 
-  if (!desiredPanel) {
+  if (!panelOrder) {
     return {
       root,
 
@@ -5185,11 +5316,8 @@ async function reorderRootLayers(
   }
 
 
-  /*
-   * Panel order와 children 배열은 반대.
-   */
   const desiredChildren =
-    desiredPanel
+    panelOrder
       .map(
         item =>
           item.node
@@ -5294,7 +5422,7 @@ async function processOrder(
       "Layer Order",
       "SUCCESS",
       state.root,
-      "Layer Panel을 화면 기준 위→아래, 같은 행은 좌→우로 정렬했습니다."
+      "화면 위→아래 / 같은 줄 좌→우 순으로 정렬"
     );
 
 
@@ -5315,8 +5443,8 @@ async function processOrder(
       state.root,
       tx.reason ===
         "visual-changed"
-        ? "정렬 과정에서 실제 Z-order Render가 달라져 기존 Layer 순서를 유지했습니다."
-        : `Layer 정렬 실패: ${tx.reason}`
+        ? "Layer 순서를 바꾸면 Z-order Render가 달라져 기존 순서 유지"
+        : tx.reason
     );
 
 
@@ -5331,27 +5459,13 @@ async function processOrder(
       : tx.reason;
 
 
-  if (
-    reason ===
-    "root-auto-layout"
-  ) {
-    addReport(
-      stats,
-      "Layer Order",
-      "SKIPPED",
-      state.root,
-      "최상위 Frame이 Auto Layout이라 Child 순서 변경 시 실제 화면 배치가 달라질 수 있어 정렬하지 않았습니다."
-    );
-
-  } else {
-    addReport(
-      stats,
-      "Layer Order",
-      "SKIPPED",
-      state.root,
-      reason
-    );
-  }
+  addReport(
+    stats,
+    "Layer Order",
+    "SKIPPED",
+    state.root,
+    reason
+  );
 }
 
 
@@ -5489,9 +5603,7 @@ function analyzeScreen(root) {
 
     if (
       isContainer(node) &&
-      actuallyClipsChildren(
-        node
-      )
+      actuallyClipsChildren(node)
     ) {
       result.clips++;
     }
@@ -5561,40 +5673,19 @@ function analyzeScreen(root) {
 
 
 /* =========================================================
-   FINAL VISUAL CHECK
-========================================================= */
-
-async function finalVisualCheck(
-  originalRoot,
-  state
-) {
-  const original =
-    await exportNodePng(
-      originalRoot
-    );
-
-
-  const final =
-    await exportNodePng(
-      state.root
-    );
-
-
-  return (
-    original &&
-    final &&
-    sameBytes(
-      original,
-      final
-    )
-  );
-}
-
-
-/* =========================================================
    COMMIT
 ========================================================= */
 
+/*
+ * ★ 중요
+ *
+ * Final PNG equality 때문에
+ * Screen 전체를 Rollback하지 않는다.
+ *
+ * 여기까지 도달했다는 것은
+ * 각 위험 작업이 개별 Visual Verification을 통과했거나
+ * 실패한 작업만 이미 Rollback되었다는 뜻.
+ */
 function commitWorkingRoot(
   original,
   working
@@ -5696,10 +5787,6 @@ async function processRoot(
   }
 
 
-  /*
-   * 작업 결과를 안전하게 교체하려면
-   * 현재 안정 버전에서는 Page 직속 Screen이어야 한다.
-   */
   const parent =
     safeParent(
       originalRoot
@@ -5721,13 +5808,13 @@ async function processRoot(
       stats,
 
       fatalReason:
-        "선택한 Screen이 Page 직속 Layer가 아닙니다. 상위 Screen을 선택해주세요."
+        "선택 Screen은 Page 직속 Layer여야 합니다."
     };
   }
 
 
   /* =====================================================
-     1. WORKING COPY
+     1. CREATE WORKING COPY
   ===================================================== */
 
   let state;
@@ -5759,7 +5846,7 @@ async function processRoot(
 
 
   /* =====================================================
-     2. GARBAGE MARK
+     2. MARK GARBAGE
   ===================================================== */
 
   markSelectedGarbage(
@@ -5769,7 +5856,7 @@ async function processRoot(
 
 
   /* =====================================================
-     3. GARBAGE DELETE
+     3. DELETE GARBAGE
   ===================================================== */
 
   await processGarbage(
@@ -5799,7 +5886,7 @@ async function processRoot(
 
 
   /* =====================================================
-     6. MASK / CLIP → SCREENSHOT
+     6. MASK / CLIP
   ===================================================== */
 
   await processScreenshots(
@@ -5809,7 +5896,7 @@ async function processRoot(
 
 
   /* =====================================================
-     7. FRAME / GROUP / AUTOLAYOUT FLATTEN
+     7. FLATTEN
   ===================================================== */
 
   await processFlatten(
@@ -5830,7 +5917,8 @@ async function processRoot(
 
   /* =====================================================
      9. NAMING
-     이름은 Screen Render에 영향 없음.
+     -----------------------------------------------------
+     Visual에 영향 없음.
   ===================================================== */
 
   processNaming(
@@ -5844,7 +5932,7 @@ async function processRoot(
     "Layer Naming",
     "SUCCESS",
     state.root,
-    `${stats.renamedLayers}개 Layer 이름 변경 / ${stats.renameSkipped}개 변경 실패`
+    `${stats.renamedLayers}개 Layer 이름 정리 완료`
   );
 
 
@@ -5859,7 +5947,7 @@ async function processRoot(
 
 
   /* =====================================================
-     11. INTERNAL DATA CLEAN
+     11. CLEAR INTERNAL DATA
   ===================================================== */
 
   clearInternalPluginData(
@@ -5868,39 +5956,9 @@ async function processRoot(
 
 
   /* =====================================================
-     12. FINAL VISUAL CHECK
-  ===================================================== */
-
-  const visualPass =
-    await finalVisualCheck(
-      originalRoot,
-      state
-    );
-
-
-  if (!visualPass) {
-    safeRemove(
-      state.root
-    );
-
-
-    return {
-      success:
-        false,
-
-      root:
-        originalRoot,
-
-      stats,
-
-      fatalReason:
-        "최종 Render 검증에서 원본과 차이가 발견되었습니다. 제1법칙에 따라 작업본 전체를 폐기하고 원본을 유지했습니다."
-    };
-  }
-
-
-  /* =====================================================
-     13. COMMIT
+     12. COMMIT
+     -----------------------------------------------------
+     ★ Final 전체 PNG rollback 없음.
   ===================================================== */
 
   const committed =
@@ -5911,6 +5969,10 @@ async function processRoot(
 
 
   if (!committed) {
+    /*
+     * Commit 자체가 실패한 경우에만
+     * 원본 유지.
+     */
     safeRemove(
       state.root
     );
@@ -6026,19 +6088,15 @@ async msg => {
 
       if (
         !node ||
-        node.type === "DOCUMENT" ||
-        node.type === "PAGE"
+        node.type ===
+          "DOCUMENT" ||
+        node.type ===
+          "PAGE"
       ) {
         return;
       }
 
 
-      /*
-       * Canvas Selection만 바뀐다.
-       *
-       * 실제 Clean Root는
-       * analyzedRootIds에 따로 저장되어 있음.
-       */
       figma.currentPage.selection =
         [node];
 
@@ -6051,6 +6109,9 @@ async msg => {
     } catch (_) {}
 
 
+    /*
+     * analyzedRootIds는 그대로 유지.
+     */
     return;
   }
 
@@ -6113,7 +6174,7 @@ async msg => {
 
 
     /*
-     * Analyze Root 고정.
+     * Analyze 대상 고정.
      */
     analyzedRootIds =
       selection
@@ -6165,11 +6226,12 @@ async msg => {
     "clean"
   ) {
     /*
-     * Analyze를 거치지 않은 경우에만
+     * Analyze하지 않고 Clean한 경우에만
      * 현재 Selection 사용.
      */
     if (
-      analyzedRootIds.length === 0
+      analyzedRootIds.length ===
+      0
     ) {
       analyzedRootIds =
         [
@@ -6200,7 +6262,7 @@ async msg => {
           "error",
 
         message:
-          "Analyze했던 Screen을 찾을 수 없습니다. Screen을 다시 선택한 뒤 Analyze Screen을 실행해주세요."
+          "Analyze했던 Screen을 찾을 수 없습니다. Screen을 다시 선택하고 Analyze Screen을 실행해주세요."
       });
 
 
@@ -6272,9 +6334,6 @@ async msg => {
 
       preservedAreas: 0,
 
-      /*
-       * 기존 UI 호환
-       */
       visualShells: 0,
       bakedAreas: 0,
 
@@ -6338,7 +6397,8 @@ async msg => {
           )
         ) {
           if (
-            key === "report"
+            key ===
+            "report"
           ) {
             total.report.push(
               ...result.stats.report
@@ -6378,7 +6438,9 @@ async msg => {
         if (
           isAlive(root)
         ) {
-          resultRoots.push(root);
+          resultRoots.push(
+            root
+          );
         }
       }
     }
@@ -6404,10 +6466,6 @@ async msg => {
         );
 
 
-      /*
-       * 다음 Clean에서도
-       * 새 Root를 유지.
-       */
       analyzedRootIds =
         aliveRoots
           .map(
@@ -6419,7 +6477,7 @@ async msg => {
 
 
     /* =====================================================
-       RESULT
+       COMPLETE
     ===================================================== */
 
     figma.ui.postMessage({
@@ -6432,7 +6490,7 @@ async msg => {
 
 
     /* =====================================================
-       CONSOLE REPORT
+       REPORT
     ===================================================== */
 
     console.log(
@@ -6455,31 +6513,31 @@ async msg => {
 
 
     console.log(
-      "Garbage Protected:",
+      "Garbage Preserved:",
       total.protectedGarbage
     );
 
 
     console.log(
-      "Instance Detached:",
+      "Instances Detached:",
       total.detachedInstances
     );
 
 
     console.log(
-      "Instance Preserved:",
+      "Instances Preserved:",
       total.rejectedInstances
     );
 
 
     console.log(
-      "Flattened Containers:",
+      "Containers Flattened:",
       total.flattenedContainers
     );
 
 
     console.log(
-      "Flatten Preserved:",
+      "Containers Preserved:",
       total.flattenRejected
     );
 
@@ -6491,7 +6549,7 @@ async msg => {
 
 
     console.log(
-      "Renamed Layers:",
+      "Layer Rename:",
       total.renamedLayers
     );
 
@@ -6503,7 +6561,7 @@ async msg => {
 
 
     console.log(
-      "Layer Order:",
+      "Order Changed:",
       total.orderChanged
     );
 
@@ -6512,6 +6570,7 @@ async msg => {
       console.table(
         total.report
       );
+
     } catch (_) {
       console.log(
         total.report
@@ -6520,7 +6579,8 @@ async msg => {
 
 
     if (
-      total.failureReasons.length > 0
+      total.failureReasons.length >
+      0
     ) {
       console.error(
         "Fatal failures:",
@@ -6530,7 +6590,7 @@ async msg => {
 
 
     /* =====================================================
-       NOTIFY
+       NOTIFICATION
     ===================================================== */
 
     if (
@@ -6542,7 +6602,7 @@ async msg => {
 
     } else {
       figma.notify(
-        `Cleanup 완료 · ${total.committed}개 적용 / ${total.rolledBack}개 Screen은 최종 안전검사로 원본 유지`
+        `Cleanup 완료 · ${total.committed} Screen 적용 / ${total.rolledBack} Screen은 작업 자체 오류로 원본 유지`
       );
     }
 
