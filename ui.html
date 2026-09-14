@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 20px;
+
+      font-family:
+        Inter,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+
+      background:
+        var(--figma-color-bg);
+
+      color:
+        var(--figma-color-text);
+    }
+
+    h1 {
+      margin: 0 0 6px;
+
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .description {
+      margin-bottom: 20px;
+
+      font-size: 12px;
+      line-height: 1.55;
+
+      color:
+        var(--figma-color-text-secondary);
+    }
+
+    .info {
+      padding: 14px;
+
+      border: 1px solid
+        var(--figma-color-border);
+
+      border-radius: 8px;
+
+      background:
+        var(--figma-color-bg-secondary);
+
+      margin-bottom: 16px;
+    }
+
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+
+      margin-bottom: 8px;
+
+      font-size: 12px;
+    }
+
+    .info-row:last-child {
+      margin-bottom: 0;
+    }
+
+    .label {
+      color:
+        var(--figma-color-text-secondary);
+    }
+
+    .value {
+      font-weight: 600;
+    }
+
+    button {
+      width: 100%;
+      height: 40px;
+
+      margin-bottom: 8px;
+
+      border: none;
+      border-radius: 7px;
+
+      font-size: 13px;
+      font-weight: 600;
+
+      cursor: pointer;
+    }
+
+    #analyze {
+      background:
+        var(--figma-color-bg-secondary);
+
+      color:
+        var(--figma-color-text);
+
+      border: 1px solid
+        var(--figma-color-border);
+    }
+
+    #clean {
+      background:
+        var(--figma-color-bg-brand);
+
+      color:
+        var(--figma-color-text-onbrand);
+    }
+
+    button:hover {
+      opacity: 0.9;
+    }
+
+    #result {
+      margin-top: 14px;
+
+      padding: 12px;
+
+      border-radius: 7px;
+
+      font-size: 12px;
+      line-height: 1.55;
+
+      display: none;
+
+      white-space: pre-wrap;
+    }
+
+    .success {
+      display: block !important;
+
+      background:
+        var(--figma-color-bg-success-tertiary);
+    }
+
+    .warning {
+      display: block !important;
+
+      background:
+        var(--figma-color-bg-warning-tertiary);
+    }
+
+    .error {
+      display: block !important;
+
+      background:
+        var(--figma-color-bg-danger-tertiary);
+    }
+
+    .rule {
+      font-size: 11px;
+
+      color:
+        var(--figma-color-text-tertiary);
+
+      margin-top: 18px;
+
+      line-height: 1.6;
+    }
+
+    strong {
+      color:
+        var(--figma-color-text);
+    }
+  </style>
+</head>
+
+
+<body>
+
+  <h1>Screen Layer Cleaner</h1>
+
+  <div class="description">
+    화면 디자인은 유지하면서
+    내부 레이어 구조만 정리합니다.
+  </div>
+
+
+  <div class="info">
+
+    <div class="info-row">
+      <span class="label">
+        Hidden Layer
+      </span>
+
+      <span class="value">
+        Delete
+      </span>
+    </div>
+
+
+    <div class="info-row">
+      <span class="label">
+        Layer Depth
+      </span>
+
+      <span class="value">
+        1 Depth
+      </span>
+    </div>
+
+
+    <div class="info-row">
+      <span class="label">
+        Text Layer
+      </span>
+
+      <span class="value">
+        -
+      </span>
+    </div>
+
+
+    <div class="info-row">
+      <span class="label">
+        Vector
+      </span>
+
+      <span class="value">
+        icon
+      </span>
+    </div>
+
+
+    <div class="info-row">
+      <span class="label">
+        Line
+      </span>
+
+      <span class="value">
+        line
+      </span>
+    </div>
+
+  </div>
+
+
+  <button id="analyze">
+    선택한 Screen 분석
+  </button>
+
+  <button id="clean">
+    Clean & Flatten
+  </button>
+
+
+  <div id="result"></div>
+
+
+  <div class="rule">
+    <strong>화면 보호 규칙</strong><br>
+
+    Mask, Clip Content,
+    Container Opacity 등의 구조가 발견되면
+    화면이 변경될 가능성이 있으므로
+    자동 정리를 중단합니다.
+  </div>
+
+
+<script>
+
+  const result =
+    document.getElementById("result");
+
+
+  document.getElementById(
+    "analyze"
+  ).onclick = () => {
+
+    result.className = "";
+    result.style.display = "none";
+
+    parent.postMessage({
+      pluginMessage: {
+        type: "analyze"
+      }
+    }, "*");
+  };
+
+
+  document.getElementById(
+    "clean"
+  ).onclick = () => {
+
+    result.className = "";
+    result.style.display = "none";
+
+    parent.postMessage({
+      pluginMessage: {
+        type: "clean"
+      }
+    }, "*");
+  };
+
+
+  onmessage = (event) => {
+
+    const msg =
+      event.data.pluginMessage;
+
+
+    if (msg.type === "error") {
+
+      result.className = "error";
+
+      result.textContent =
+        msg.message;
+
+      return;
+    }
+
+
+    if (msg.type === "analysis") {
+
+      let text = "";
+
+      for (const data of msg.results) {
+
+        text +=
+`[${data.name}]
+
+전체 레이어 : ${data.total}
+가비지 후보 : ${data.garbage}
+Container : ${data.containers}
+Text : ${data.text}
+Icon : ${data.icons}
+Line : ${data.lines}
+위험 구조 : ${data.unsafe.length}
+
+`;
+      }
+
+      result.className = "success";
+
+      result.textContent =
+        text.trim();
+
+      return;
+    }
+
+
+    if (msg.type === "unsafe") {
+
+      result.className = "warning";
+
+      result.textContent =
+`화면 보존을 위해 작업을 중단했습니다.
+
+다음 Layer는 Flatten 시 화면이 변경될 수 있습니다.
+
+${msg.layers.join("\n")}`;
+
+      return;
+    }
+
+
+    if (msg.type === "complete") {
+
+      const r = msg.result;
+
+      result.className = "success";
+
+      result.textContent =
+`정리 완료
+
+Screen : ${r.screens}
+삭제된 Garbage : ${r.garbage}
+1 Depth 이동 : ${r.moved}
+이름 변경 : ${r.renamed}
+Visual Shell 생성 : ${r.shell}`;
+
+    }
+  };
+
+</script>
+
+</body>
+</html>
