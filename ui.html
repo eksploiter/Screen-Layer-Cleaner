@@ -14,9 +14,7 @@
 
 
 body {
-
   margin: 0;
-
   padding: 20px;
 
   font-family:
@@ -40,21 +38,17 @@ body {
 
 
 .title {
-
   margin: 0 0 5px;
 
   font-size: 18px;
-
   font-weight: 700;
 }
 
 
 .subtitle {
-
   margin: 0;
 
   font-size: 12px;
-
   line-height: 1.55;
 
   color:
@@ -63,13 +57,34 @@ body {
 
 
 /* =====================================================
+   PRIORITY
+===================================================== */
+
+.priority {
+  margin-bottom: 14px;
+  padding: 12px;
+
+  border-radius: 8px;
+
+  background:
+    var(--figma-color-bg-success-tertiary);
+
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+
+.priority strong {
+  font-size: 12px;
+}
+
+
+/* =====================================================
    CARD
 ===================================================== */
 
 .card {
-
   margin-bottom: 14px;
-
   padding: 14px;
 
   border:
@@ -84,13 +99,10 @@ body {
 
 
 .row {
-
   display: flex;
 
   align-items: center;
-
-  justify-content:
-    space-between;
+  justify-content: space-between;
 
   min-height: 27px;
 
@@ -101,43 +113,14 @@ body {
 
 
 .label {
-
   color:
     var(--figma-color-text-secondary);
 }
 
 
 .value {
-
   font-weight: 600;
-
   text-align: right;
-}
-
-
-/* =====================================================
-   PRIORITY
-===================================================== */
-
-.priority {
-
-  margin-bottom: 14px;
-
-  padding: 12px;
-
-  border-radius: 8px;
-
-  background:
-    var(--figma-color-bg-success-tertiary);
-
-  font-size: 11px;
-
-  line-height: 1.55;
-}
-
-
-.priority strong {
-  font-size: 12px;
 }
 
 
@@ -146,9 +129,7 @@ body {
 ===================================================== */
 
 .option-area {
-
   margin-top: 12px;
-
   padding-top: 12px;
 
   border-top:
@@ -158,7 +139,6 @@ body {
 
 
 .option-label {
-
   display: flex;
 
   align-items: center;
@@ -179,9 +159,7 @@ body {
 
 
 .option-label input {
-
   width: 14px;
-
   height: 14px;
 
   margin: 0;
@@ -189,11 +167,10 @@ body {
 
 
 /* =====================================================
-   BUTTONS
+   BUTTON
 ===================================================== */
 
 button {
-
   border: none;
 
   font-family: inherit;
@@ -202,10 +179,15 @@ button {
 }
 
 
+button:disabled {
+  opacity: 0.45;
+
+  cursor: default;
+}
+
+
 .main-button {
-
   width: 100%;
-
   height: 43px;
 
   margin-bottom: 9px;
@@ -213,13 +195,11 @@ button {
   border-radius: 8px;
 
   font-size: 13px;
-
   font-weight: 600;
 }
 
 
 .secondary {
-
   border:
     1px solid
     var(--figma-color-border);
@@ -233,7 +213,6 @@ button {
 
 
 .primary {
-
   background:
     var(--figma-color-bg-brand);
 
@@ -242,29 +221,19 @@ button {
 }
 
 
-button:disabled {
-
-  opacity: 0.45;
-
-  cursor: default;
-}
-
-
 /* =====================================================
    RESULT
 ===================================================== */
 
 #result {
-
   display: none;
 
   margin-top: 8px;
-
   margin-bottom: 12px;
 
   padding: 13px;
 
-  max-height: 280px;
+  max-height: 350px;
 
   overflow-y: auto;
 
@@ -273,13 +242,11 @@ button:disabled {
   white-space: pre-wrap;
 
   font-size: 12px;
-
   line-height: 1.6;
 }
 
 
 .success {
-
   display:
     block !important;
 
@@ -289,7 +256,6 @@ button:disabled {
 
 
 .error {
-
   display:
     block !important;
 
@@ -299,7 +265,6 @@ button:disabled {
 
 
 .processing {
-
   display:
     block !important;
 
@@ -313,25 +278,20 @@ button:disabled {
 ===================================================== */
 
 #garbageSection {
-
   margin-bottom: 12px;
 }
 
 
 .garbage-toggle {
-
   display: none;
 
   width: 100%;
-
   min-height: 44px;
 
   padding: 0 12px;
 
   align-items: center;
-
-  justify-content:
-    space-between;
+  justify-content: space-between;
 
   border:
     1px solid
@@ -346,13 +306,11 @@ button:disabled {
     var(--figma-color-text);
 
   font-size: 12px;
-
   font-weight: 600;
 }
 
 
 .garbage-toggle-left {
-
   display: flex;
 
   align-items: center;
@@ -362,9 +320,7 @@ button:disabled {
 
 
 .garbage-count {
-
   min-width: 22px;
-
   height: 20px;
 
   padding: 2px 6px;
@@ -384,7 +340,6 @@ button:disabled {
 
 
 .garbage-list {
-
   display: none;
 
   margin-top: 7px;
@@ -407,7 +362,6 @@ button:disabled {
 
 
 .garbage-actions {
-
   position: sticky;
 
   top: 0;
@@ -416,9 +370,7 @@ button:disabled {
 
   display: flex;
 
-  justify-content:
-    space-between;
-
+  justify-content: space-between;
   align-items: center;
 
   padding: 9px 10px;
@@ -435,7 +387,6 @@ button:disabled {
 
 
 .garbage-action-buttons {
-
   display: flex;
 
   gap: 4px;
@@ -443,7 +394,6 @@ button:disabled {
 
 
 .small-action {
-
   padding: 4px 6px;
 
   background:
@@ -457,7 +407,6 @@ button:disabled {
 
 
 .garbage-item {
-
   display: flex;
 
   align-items: flex-start;
@@ -483,7 +432,6 @@ button:disabled {
 
 
 .garbage-info {
-
   flex: 1;
 
   min-width: 0;
@@ -491,21 +439,17 @@ button:disabled {
 
 
 .garbage-name {
-
   overflow: hidden;
 
   text-overflow: ellipsis;
-
   white-space: nowrap;
 
   font-size: 12px;
-
   font-weight: 600;
 }
 
 
 .garbage-meta {
-
   margin-top: 3px;
 
   font-size: 10px;
@@ -516,13 +460,11 @@ button:disabled {
 
 
 .garbage-path {
-
   margin-top: 3px;
 
   overflow: hidden;
 
   text-overflow: ellipsis;
-
   white-space: nowrap;
 
   font-size: 9px;
@@ -533,7 +475,6 @@ button:disabled {
 
 
 .layer-view {
-
   flex-shrink: 0;
 
   padding: 5px 8px;
@@ -559,11 +500,9 @@ button:disabled {
 ===================================================== */
 
 .note {
-
   margin-top: 16px;
 
   font-size: 11px;
-
   line-height: 1.6;
 
   color:
@@ -572,7 +511,6 @@ button:disabled {
 
 
 .note strong {
-
   color:
     var(--figma-color-text-secondary);
 }
@@ -607,8 +545,8 @@ button:disabled {
 
   <br>
 
-  Cleanup 전후의 렌더링 결과가 다르면
-  해당 작업을 Rollback합니다.
+  구조 변경은 Depth 단위 Batch로 처리하며,
+  렌더링 결과가 달라진 Batch만 자동 Rollback합니다.
 
 </div>
 
@@ -631,28 +569,23 @@ button:disabled {
   </div>
 
   <div class="row">
-    <span class="label">Layer Depth</span>
-    <span class="value">1 Depth First</span>
-  </div>
-
-  <div class="row">
-    <span class="label">Layer Order</span>
-    <span class="value">↓ then →</span>
-  </div>
-
-  <div class="row">
     <span class="label">Instance</span>
-    <span class="value">Detach</span>
+    <span class="value">Depth Batch Detach</span>
   </div>
 
   <div class="row">
-    <span class="label">Frame / Group / Auto Layout</span>
-    <span class="value">Flatten</span>
+    <span class="label">Frame / Group</span>
+    <span class="value">Depth Batch Flatten</span>
   </div>
 
   <div class="row">
     <span class="label">Mask / Real Clip</span>
     <span class="value">screenshot</span>
+  </div>
+
+  <div class="row">
+    <span class="label">Layer Order</span>
+    <span class="value">↓ then →</span>
   </div>
 
   <div class="row">
@@ -686,7 +619,7 @@ button:disabled {
       />
 
       <span>
-        Font Family를 Inter로 변경
+        모든 Text의 Font Family를 Inter로 변경
       </span>
 
     </label>
@@ -782,30 +715,29 @@ button:disabled {
 
 <div class="note">
 
-  <strong>Garbage</strong><br>
-  Analyze 후 후보를 직접 확인하고,
-  체크한 Layer만 삭제합니다.
+  <strong>Batch Processing</strong><br>
+  Instance / Screenshot / Flatten은 같은 Depth의 Layer를
+  한 번에 처리합니다.
+  실패한 Batch만 되돌리고 다음 단계는 계속 진행합니다.
 
   <br><br>
 
-  <strong>Naming</strong><br>
-  대표 Screen 이름은 항상 유지합니다.<br>
-  Frame / Group / Auto Layout 이름 정리는
-  옵션으로 선택할 수 있습니다.
+  <strong>Font → Inter</strong><br>
+  Font 변경은 사용자가 선택한 Visual 변경이므로
+  PNG Rollback 대상에서 제외합니다.
+
+  <br><br>
+
+  <strong>LID</strong><br>
+  cci_ctn_, cci_msg_, ctn_, msg_로 시작하는
+  Layer 이름은 항상 보존합니다.
 
   <br><br>
 
   <strong>Layer Order</strong><br>
   겹치지 않는 Layer는 위→아래,
   같은 줄에서는 좌→우로 정리합니다.
-  겹치는 Layer는 기존 Z-order를 유지합니다.
-
-  <br><br>
-
-  <strong>Visual Verification</strong><br>
-  원본에 직접 작업하지 않습니다.
-  복제본에서 Cleanup 후 PNG 렌더 결과를 비교하고,
-  Visual이 같은 작업만 적용합니다.
+  겹치는 Layer는 기존 Z-order를 최대한 유지합니다.
 
 </div>
 
@@ -858,15 +790,15 @@ const garbageArrow =
   );
 
 
-const renameTextOption =
-  document.getElementById(
-    "renameTextOption"
-  );
-
-
 const fontOption =
   document.getElementById(
     "fontOption"
+  );
+
+
+const renameTextOption =
+  document.getElementById(
+    "renameTextOption"
   );
 
 
@@ -881,19 +813,36 @@ const renameContainersOption =
 ===================================================== */
 
 function escapeHtml(value) {
-
   return String(value)
 
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+    .replaceAll(
+      "&",
+      "&amp;"
+    )
+
+    .replaceAll(
+      "<",
+      "&lt;"
+    )
+
+    .replaceAll(
+      ">",
+      "&gt;"
+    )
+
+    .replaceAll(
+      '"',
+      "&quot;"
+    )
+
+    .replaceAll(
+      "'",
+      "&#039;"
+    );
 }
 
 
 function setLoading(loading) {
-
   analyzeButton.disabled =
     loading;
 
@@ -903,32 +852,36 @@ function setLoading(loading) {
 
 
 function clearResult() {
-
-  result.className = "";
+  result.className =
+    "";
 
   result.style.display =
     "none";
 
-  result.textContent = "";
+  result.textContent =
+    "";
 }
 
 
 /* =====================================================
-   GARBAGE
+   GARBAGE UI
 ===================================================== */
 
 garbageToggle.onclick =
 () => {
-
   garbageList
     .classList
-    .toggle("open");
+    .toggle(
+      "open"
+    );
 
 
   const open =
     garbageList
       .classList
-      .contains("open");
+      .contains(
+        "open"
+      );
 
 
   garbageArrow.textContent =
@@ -939,7 +892,6 @@ garbageToggle.onclick =
 
 
 function renderGarbageList(items) {
-
   garbageCount.textContent =
     items.length;
 
@@ -947,7 +899,6 @@ function renderGarbageList(items) {
   if (
     items.length === 0
   ) {
-
     garbageToggle.style.display =
       "none";
 
@@ -1017,7 +968,6 @@ function renderGarbageList(items) {
   for (
     const item of items
   ) {
-
     const element =
       document.createElement(
         "div"
@@ -1079,30 +1029,29 @@ function renderGarbageList(items) {
     .querySelectorAll(
       "[data-select-node]"
     )
-    .forEach(button => {
+    .forEach(
+      button => {
+        button.onclick =
+        event => {
+          event.stopPropagation();
 
-      button.onclick =
-      event => {
 
-        event.stopPropagation();
+          parent.postMessage(
+            {
+              pluginMessage: {
+                type:
+                  "select-layer",
 
-
-        parent.postMessage(
-          {
-            pluginMessage: {
-
-              type:
-                "select-layer",
-
-              nodeId:
-                button.dataset
-                  .selectNode
-            }
-          },
-          "*"
-        );
-      };
-    });
+                nodeId:
+                  button.dataset
+                    .selectNode
+              }
+            },
+            "*"
+          );
+        };
+      }
+    );
 
 
   document
@@ -1111,7 +1060,6 @@ function renderGarbageList(items) {
     )
     .onclick =
     event => {
-
       event.stopPropagation();
 
 
@@ -1119,11 +1067,12 @@ function renderGarbageList(items) {
         .querySelectorAll(
           ".garbage-check"
         )
-        .forEach(check => {
-
-          check.checked =
-            true;
-        });
+        .forEach(
+          check => {
+            check.checked =
+              true;
+          }
+        );
     };
 
 
@@ -1133,7 +1082,6 @@ function renderGarbageList(items) {
     )
     .onclick =
     event => {
-
       event.stopPropagation();
 
 
@@ -1141,11 +1089,12 @@ function renderGarbageList(items) {
         .querySelectorAll(
           ".garbage-check"
         )
-        .forEach(check => {
-
-          check.checked =
-            false;
-        });
+        .forEach(
+          check => {
+            check.checked =
+              false;
+          }
+        );
     };
 }
 
@@ -1156,7 +1105,6 @@ function renderGarbageList(items) {
 
 analyzeButton.onclick =
 () => {
-
   clearResult();
 
   setLoading(true);
@@ -1165,7 +1113,6 @@ analyzeButton.onclick =
   parent.postMessage(
     {
       pluginMessage: {
-
         type:
           "analyze"
       }
@@ -1181,7 +1128,6 @@ analyzeButton.onclick =
 
 cleanButton.onclick =
 () => {
-
   clearResult();
 
 
@@ -1193,12 +1139,13 @@ cleanButton.onclick =
     .querySelectorAll(
       ".garbage-check:checked"
     )
-    .forEach(check => {
-
-      garbageIds.push(
-        check.dataset.nodeId
-      );
-    });
+    .forEach(
+      check => {
+        garbageIds.push(
+          check.dataset.nodeId
+        );
+      }
+    );
 
 
   setLoading(true);
@@ -1211,27 +1158,30 @@ cleanButton.onclick =
   result.textContent =
 `Cleaning...
 
-Original은 유지한 상태로
 Working Copy에서 Cleanup을 진행합니다.
 
-대표 Screen 이름은 유지됩니다.
+Instance
+→ Depth Batch
 
-완료 후 Visual을 검증합니다.
+Screenshot / Clip
+→ Depth Batch
 
-Inter
+Flatten
+→ Depth Batch
+
+Font → Inter
 ${fontOption.checked ? "ON" : "OFF"}
 
 Text → "-"
 ${renameTextOption.checked ? "ON" : "OFF"}
 
-Frame / Group / Auto Layout Naming
+Container Naming
 ${renameContainersOption.checked ? "ON" : "OFF"}`;
 
 
   parent.postMessage(
     {
       pluginMessage: {
-
         type:
           "clean",
 
@@ -1258,7 +1208,6 @@ ${renameContainersOption.checked ? "ON" : "OFF"}`;
 
 onmessage =
 event => {
-
   const msg =
     event.data.pluginMessage;
 
@@ -1274,9 +1223,8 @@ event => {
 
   if (
     msg.type ===
-    "processing"
+      "processing"
   ) {
-
     setLoading(true);
 
     return;
@@ -1289,9 +1237,8 @@ event => {
 
   if (
     msg.type ===
-    "error"
+      "error"
   ) {
-
     setLoading(false);
 
 
@@ -1313,9 +1260,8 @@ event => {
 
   if (
     msg.type ===
-    "analysis"
+      "analysis"
   ) {
-
     setLoading(false);
 
 
@@ -1331,15 +1277,11 @@ event => {
       const data of
       msg.results
     ) {
-
       output +=
 `[${data.name}]
 
 Root Type
 ${data.rootType}
-
-Root Name
-Preserve
 
 Root Conversion
 ${data.willConvertToFrame ? "→ Frame" : "Already Frame"}
@@ -1388,7 +1330,6 @@ ${data.bakeCandidates}
           data.garbageItems
         )
       ) {
-
         allGarbage =
           allGarbage.concat(
             data.garbageItems
@@ -1420,9 +1361,8 @@ ${data.bakeCandidates}
 
   if (
     msg.type ===
-    "complete"
+      "complete"
   ) {
-
     setLoading(false);
 
 
@@ -1430,16 +1370,105 @@ ${data.bakeCandidates}
       msg.result;
 
 
+    /*
+     * Screen 자체가 Commit 되었으면 PASS.
+     *
+     * 개별 Batch rollback은
+     * Screen 전체 실패가 아니다.
+     */
+
     const verification =
       r.rolledBack === 0
         ? "PASS"
-        : "FAILED / PARTIAL ROLLBACK";
+        : "FAILED / SCREEN ROLLBACK";
 
 
     result.className =
       r.rolledBack === 0
         ? "success"
         : "error";
+
+
+    let failureOutput =
+      "";
+
+
+    if (
+      Array.isArray(
+        r.failureReasons
+      ) &&
+      r.failureReasons.length >
+        0
+    ) {
+      failureOutput +=
+`\n\nFatal Error\n`;
+
+
+      for (
+        const failure of
+        r.failureReasons
+      ) {
+        failureOutput +=
+`\n[${failure.screen}]
+${failure.reason}\n`;
+      }
+    }
+
+
+    /*
+     * Batch rejection 내용도 보여준다.
+     */
+
+    const rejected =
+      Array.isArray(
+        r.report
+      )
+        ? r.report.filter(
+            item =>
+              item.status ===
+                "REJECTED"
+          )
+        : [];
+
+
+    let rejectedOutput =
+      "";
+
+
+    if (
+      rejected.length >
+        0
+    ) {
+      rejectedOutput +=
+`\n\nProtected / Rejected Batch
+${rejected.length}\n`;
+
+
+      const preview =
+        rejected.slice(
+          0,
+          15
+        );
+
+
+      for (
+        const item of preview
+      ) {
+        rejectedOutput +=
+`\n• ${item.action}
+  ${item.node || ""}
+  ${item.reason || ""}\n`;
+      }
+
+
+      if (
+        rejected.length >
+          preview.length
+      ) {
+        rejectedOutput +=
+`\n...외 ${rejected.length - preview.length}건`;
+      }
+    }
 
 
     result.textContent =
@@ -1454,71 +1483,59 @@ ${r.screens}
 Committed
 ${r.committed}
 
-Rolled Back
+Screen Rolled Back
 ${r.rolledBack}
 
-Detached Instance
-${r.detachedInstances}
 
-Rejected Instance
-${r.rejectedInstances}
+Instance
+Detached ${r.detachedInstances}
+Rejected ${r.rejectedInstances}
 
-Deleted Garbage
-${r.removedGarbage}
 
-Protected Garbage
-${r.protectedGarbage}
+Garbage
+Deleted ${r.removedGarbage}
+Protected ${r.protectedGarbage}
 
-Removed Container
-${r.removedContainers}
 
-Flattened Container
-${r.flattenedContainers}
+Flatten
+Container ${r.flattenedContainers}
+Rejected ${r.flattenRejected}
+Moved Layer ${r.movedLayers}
 
-Flattened Layer
-${r.movedLayers}
 
-Fast Garbage
-${r.fastGarbage}
+Screenshot
+Baked ${r.screenshotBaked}
+Rejected ${r.screenshotRejected}
 
-Fast Flatten
-${r.fastFlatten}
 
-Text → Inter
-${r.convertedTexts}
+Font → Inter
+Text ${r.convertedTexts}
+Segment ${r.convertedFontSegments}
+Failed ${r.failedFontConversions}
 
-Font Conversion Failed
-${r.failedFontConversions}
 
-Renamed Layer
-${r.renamedLayers}
+Naming
+Renamed ${r.renamedLayers}
 
-Visual Shell
-${r.visualShells}
 
-Screenshot Bake
-${r.bakedAreas}
+Layer Order
+Changed ${r.orderChanged}
+Rejected ${r.orderRejected}
 
-Preserved Exception
-${r.preservedAreas}
 
-Tree Scan
-${r.treeScans}
+Performance
+Tree Scan ${r.treeScans}
+Visual Batch Check ${r.visualBatchChecks}
+Batch Rollback ${r.batchRollbacks}
 
-Visual Batch Check
-${r.visualBatchChecks}
 
-Binary Split
-${r.binarySplits}
-
-Final Layer
-${r.finalLayers}`;
+Final Root Layer
+${r.finalLayers}${failureOutput}${rejectedOutput}`;
 
 
     if (
       r.committed > 0
     ) {
-
       renderGarbageList(
         []
       );
