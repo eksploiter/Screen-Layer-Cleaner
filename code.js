@@ -7,32 +7,20 @@ figma.showUI(__html__, {
 
 /* =========================================================
    SCREEN LAYER CLEANER
-   FORCE FLATTEN VERSION
+   STABLE FORCE-FLATTEN VERSION
 
-   목표
+   핵심 목표
    ---------------------------------------------------------
-   Root Screen 하나만 남긴다.
-
-   Root 아래에는 최종적으로:
-   - Text
-   - Vector/Icon
-   - Line
-   - Shape
-   - Image
-   - Screenshot
-
-   만 존재하도록 한다.
-
-   중간 Container
-   - FRAME
-   - GROUP
-   - COMPONENT
-   - INSTANCE
-
-   는 최종적으로 0개가 목표.
-
-   화면 보존이 필요한 Container는
-   Preserve하지 않고 screenshot Bake 후 제거한다.
+   1. 최상위 Screen = Frame 1개
+   2. 내부 Layer는 가능한 한 모두 1 Depth
+   3. Frame / Group / Component / Instance 제거
+   4. 화면에 영향을 주는 복잡 구조는 screenshot으로 보존
+   5. 디자인 화면은 가능한 한 그대로 유지
+   6. Garbage는 사용자가 체크한 것만 삭제
+   7. Layer Panel:
+      위 → 아래
+      같은 줄 → 좌 → 우
+   8. 겹치는 Layer의 기존 Z-order는 유지
 ========================================================= */
 
 
@@ -43,10 +31,22 @@ figma.showUI(__html__, {
 let renameTextToHyphen = false;
 let convertFontToInter = false;
 
+
+/*
+ * UI에서 전달받은 Garbage 원본 ID
+ */
 let approvedGarbageIds = new Set();
 
+
+/*
+ * Instance Detach 후 ID가 바뀔 수 있으므로
+ * Root 기준 구조 Path도 같이 저장.
+ */
+let approvedGarbagePaths = new Set();
+
+
 const ROW_TOLERANCE = 6;
-const MAX_FLATTEN_PASSES = 20;
+const MAX_FLATTEN_PASSES = 15;
 
 
 /* =========================================================
@@ -170,7 +170,7 @@ function safeRemove(node) {
     return true;
   } catch (error) {
     console.warn(
-      "Remove skipped:",
+      "Remove failed:",
       safeName(node),
       error
     );
@@ -267,7 +267,6 @@ function multiplyTransform(a, b) {
         a[0][1] * b[1][2] +
         a[0][2]
     ],
-
     [
       a[1][0] * b[0][0] +
         a[1][1] * b[1][0],
@@ -307,8 +306,7 @@ function invertTransform(m) {
   }
 
 
-  const inv =
-    1 / det;
+  const inv = 1 / det;
 
 
   return [
@@ -317,7 +315,6 @@ function invertTransform(m) {
       -c * inv,
       (c * f - d * e) * inv
     ],
-
     [
       -b * inv,
       a * inv,
@@ -334,6 +331,7 @@ function absoluteToRelative(
   const parentTransform =
     safeAbsoluteTransform(parent);
 
+
   if (!parentTransform) {
     throw new Error(
       "Parent transform unavailable."
@@ -342,9 +340,7 @@ function absoluteToRelative(
 
 
   return multiplyTransform(
-    invertTransform(
-      parentTransform
-    ),
+    invertTransform(parentTransform),
     absoluteTransform
   );
 }
@@ -362,6 +358,187 @@ function positionToRelativeTransform(
     ],
     parent
   );
+}
+
+
+/* =========================================================
+   STRUCTURE PATH
+========================================================= */
+
+/*
+ * Instance Detach 전후 ID가 달라질 수 있으므로
+ * child index 구조 Path를 사용한다.
+ *
+ * 예:
+ * 0/2/1/5
+ */
+
+function buildPathMap(root) {
+  const idToPath = new Map();
+
+
+  function walk(
+    node,
+    path
+  ) {
+    if (!isAlive(node)) {
+      return;
+    }
+
+
+    const id = safeId(node);
+
+
+    if (id) {
+      idToPath.set(
+        id,
+        path
+      );
+    }
+
+
+    const children =
+      childrenOf(node);
+
+
+    for (
+      let i = 0;
+      i < children.length;
+      i++
+    ) {
+      const childPath =
+        path === ""
+          ? String(i)
+          : `${path}/${i}`;
+
+
+      walk(
+        children[i],
+        childPath
+      );
+    }
+  }
+
+
+  walk(
+    root,
+    ""
+  );
+
+
+  return idToPath;
+}
+
+
+function prepareGarbagePaths(root) {
+  const map =
+    buildPathMap(root);
+
+
+  const result =
+    new Set();
+
+
+  for (
+    const id of
+    approvedGarbageIds
+  ) {
+    const path =
+      map.get(id);
+
+
+    if (
+      path !== undefined
+    ) {
+      result.add(path);
+    }
+  }
+
+
+  return result;
+}
+
+
+/* =========================================================
+   GARBAGE
+========================================================= */
+
+function getGarbageReason(node) {
+  if (!isAlive(node)) {
+    return null;
+  }
+
+
+  try {
+    if (
+      "visible" in node &&
+      node.visible === false
+    ) {
+      return "Hidden · visible=false";
+    }
+  } catch (_) {}
+
+
+  try {
+    if (
+      "opacity" in node &&
+      node.opacity === 0
+    ) {
+      return "Transparent · opacity=0";
+    }
+  } catch (_) {}
+
+
+  if (
+    safeType(node) === "SLICE"
+  ) {
+    return "Slice Layer";
+  }
+
+
+  return null;
+}
+
+
+function isSelectedGarbage(
+  node,
+  path
+) {
+  if (
+    getGarbageReason(node) ===
+    null
+  ) {
+    return false;
+  }
+
+
+  const id =
+    safeId(node);
+
+
+  /*
+   * ID가 그대로 살아있는 경우
+   */
+  if (
+    id &&
+    approvedGarbageIds.has(id)
+  ) {
+    return true;
+  }
+
+
+  /*
+   * Instance Detach로 ID가 변경된 경우
+   */
+  if (
+    path &&
+    approvedGarbagePaths.has(path)
+  ) {
+    return true;
+  }
+
+
+  return false;
 }
 
 
@@ -385,7 +562,8 @@ function hasVisiblePaint(paints) {
 
 
       if (
-        typeof paint.opacity === "number" &&
+        typeof paint.opacity ===
+          "number" &&
         paint.opacity === 0
       ) {
         return false;
@@ -462,9 +640,7 @@ function hasOwnVisual(node) {
     if (
       "fills" in node &&
       node.fills !== figma.mixed &&
-      hasVisiblePaint(
-        node.fills
-      )
+      hasVisiblePaint(node.fills)
     ) {
       return true;
     }
@@ -475,9 +651,7 @@ function hasOwnVisual(node) {
     if (
       "strokes" in node &&
       node.strokes !== figma.mixed &&
-      hasVisiblePaint(
-        node.strokes
-      )
+      hasVisiblePaint(node.strokes)
     ) {
       return true;
     }
@@ -489,68 +663,11 @@ function hasOwnVisual(node) {
 
 
 /* =========================================================
-   GARBAGE
-========================================================= */
-
-function getGarbageReason(node) {
-  if (!isAlive(node)) {
-    return null;
-  }
-
-
-  try {
-    if (
-      "visible" in node &&
-      node.visible === false
-    ) {
-      return "Hidden · visible=false";
-    }
-  } catch (_) {}
-
-
-  try {
-    if (
-      "opacity" in node &&
-      node.opacity === 0
-    ) {
-      return "Transparent · opacity=0";
-    }
-  } catch (_) {}
-
-
-  if (
-    safeType(node) === "SLICE"
-  ) {
-    return "Slice Layer";
-  }
-
-
-  return null;
-}
-
-
-function shouldDeleteGarbage(node) {
-  const id =
-    safeId(node);
-
-
-  if (!id) {
-    return false;
-  }
-
-
-  return (
-    approvedGarbageIds.has(id) &&
-    getGarbageReason(node) !== null
-  );
-}
-
-
-/* =========================================================
    FONT
 ========================================================= */
 
-const loadedFonts = new Set();
+const loadedFonts =
+  new Set();
 
 
 async function loadFontOnce(fontName) {
@@ -591,8 +708,7 @@ async function loadFontOnce(fontName) {
     console.warn(
       "Font load failed:",
       fontName.family,
-      fontName.style,
-      error
+      fontName.style
     );
 
 
@@ -628,13 +744,13 @@ async function ensureTextFontsLoaded(node) {
       }
 
 
-      const loaded =
+      const success =
         await loadFontOnce(
           segment.fontName
         );
 
 
-      if (!loaded) {
+      if (!success) {
         return false;
       }
     }
@@ -706,8 +822,7 @@ function mapFontStyleToInter(
 
   } else if (
     value.includes("semi bold") ||
-    value.includes("semibold") ||
-    value.includes("demi bold")
+    value.includes("semibold")
   ) {
     style = "Semi Bold";
 
@@ -774,32 +889,26 @@ async function loadInterStyle(style) {
   } catch (_) {}
 
 
-  if (
-    !loadedInterStyles.has(
-      "Regular"
-    )
-  ) {
-    try {
-      await figma.loadFontAsync({
-        family:
-          "Inter",
+  try {
+    await figma.loadFontAsync({
+      family:
+        "Inter",
 
-        style:
-          "Regular"
-      });
-
-
-      loadedInterStyles.add(
+      style:
         "Regular"
-      );
+    });
 
-    } catch (_) {
-      return null;
-    }
+
+    loadedInterStyles.add(
+      "Regular"
+    );
+
+
+    return "Regular";
+
+  } catch (_) {
+    return null;
   }
-
-
-  return "Regular";
 }
 
 
@@ -811,13 +920,13 @@ async function convertTextToInter(node) {
   }
 
 
-  const sourceLoaded =
+  const loaded =
     await ensureTextFontsLoaded(
       node
     );
 
 
-  if (!sourceLoaded) {
+  if (!loaded) {
     return 0;
   }
 
@@ -835,7 +944,7 @@ async function convertTextToInter(node) {
     for (
       const segment of segments
     ) {
-      const sourceStyle =
+      const oldStyle =
         segment.fontName &&
         segment.fontName !==
           figma.mixed
@@ -843,15 +952,15 @@ async function convertTextToInter(node) {
           : "Regular";
 
 
-      const targetStyle =
+      const newStyle =
         await loadInterStyle(
           mapFontStyleToInter(
-            sourceStyle
+            oldStyle
           )
         );
 
 
-      if (!targetStyle) {
+      if (!newStyle) {
         continue;
       }
 
@@ -864,7 +973,7 @@ async function convertTextToInter(node) {
             "Inter",
 
           style:
-            targetStyle
+            newStyle
         }
       );
 
@@ -875,14 +984,7 @@ async function convertTextToInter(node) {
 
     return converted;
 
-  } catch (error) {
-    console.warn(
-      "Inter conversion failed:",
-      safeName(node),
-      error
-    );
-
-
+  } catch (_) {
     return 0;
   }
 }
@@ -995,16 +1097,11 @@ function actuallyClipsChildren(node) {
 
 
     if (
-      bounds.x <
-        left - 0.5 ||
-
-      bounds.y <
-        top - 0.5 ||
-
+      bounds.x < left - 0.5 ||
+      bounds.y < top - 0.5 ||
       bounds.x +
         bounds.width >
         right + 0.5 ||
-
       bounds.y +
         bounds.height >
         bottom + 0.5
@@ -1018,10 +1115,6 @@ function actuallyClipsChildren(node) {
 }
 
 
-/*
- * 이 경우 Container를 직접 Flatten하지 않고
- * Container 전체를 screenshot으로 Bake.
- */
 function mustBakeContainer(node) {
   if (!isContainer(node)) {
     return false;
@@ -1029,10 +1122,11 @@ function mustBakeContainer(node) {
 
 
   /*
-   * Detach 못 한 Instance.
+   * detach되지 않은 Instance
    */
   if (
-    safeType(node) === "INSTANCE"
+    safeType(node) ===
+    "INSTANCE"
   ) {
     return true;
   }
@@ -1046,9 +1140,7 @@ function mustBakeContainer(node) {
 
 
   if (
-    actuallyClipsChildren(
-      node
-    )
+    actuallyClipsChildren(node)
   ) {
     return true;
   }
@@ -1092,7 +1184,7 @@ function mustBakeContainer(node) {
    SCREENSHOT BAKE
 ========================================================= */
 
-async function createBakeSnapshot(node) {
+async function bakeNode(node) {
   if (!isAlive(node)) {
     return null;
   }
@@ -1143,20 +1235,13 @@ async function createBakeSnapshot(node) {
         bounds.height
     };
 
-  } catch (error) {
-    console.warn(
-      "Bake export failed:",
-      safeName(node),
-      error
-    );
-
-
+  } catch (_) {
     return null;
   }
 }
 
 
-function createScreenshotLayer(
+function createScreenshot(
   snapshot,
   root
 ) {
@@ -1168,74 +1253,70 @@ function createScreenshotLayer(
   }
 
 
-  const image =
-    figma.createImage(
-      snapshot.bytes
+  try {
+    const image =
+      figma.createImage(
+        snapshot.bytes
+      );
+
+
+    const rect =
+      figma.createRectangle();
+
+
+    rect.name =
+      "screenshot";
+
+
+    rect.resize(
+      Math.max(
+        snapshot.width,
+        0.01
+      ),
+      Math.max(
+        snapshot.height,
+        0.01
+      )
     );
 
 
-  const rect =
-    figma.createRectangle();
+    rect.fills = [
+      {
+        type:
+          "IMAGE",
+
+        scaleMode:
+          "FILL",
+
+        imageHash:
+          image.hash
+      }
+    ];
 
 
-  rect.name =
-    "screenshot";
+    root.appendChild(rect);
 
 
-  rect.resize(
-    Math.max(
-      snapshot.width,
-      0.01
-    ),
-
-    Math.max(
-      snapshot.height,
-      0.01
-    )
-  );
+    rect.relativeTransform =
+      positionToRelativeTransform(
+        snapshot.x,
+        snapshot.y,
+        root
+      );
 
 
-  rect.fills = [
-    {
-      type:
-        "IMAGE",
+    return rect;
 
-      scaleMode:
-        "FILL",
-
-      imageHash:
-        image.hash
-    }
-  ];
-
-
-  root.appendChild(
-    rect
-  );
-
-
-  rect.relativeTransform =
-    positionToRelativeTransform(
-      snapshot.x,
-      snapshot.y,
-      root
-    );
-
-
-  return rect;
+  } catch (_) {
+    return null;
+  }
 }
 
 
 /* =========================================================
-   INSTANCE DETACH
+   INSTANCE
 ========================================================= */
 
-/*
- * 한 번 재귀 순회.
- *
- * Detach 가능한 Instance만 풀고
- * 실패 Instance는 나중에 screenshot Bake.
- */
 function detachInstancesSafely(
   parent,
   stats
@@ -1275,21 +1356,16 @@ function detachInstancesSafely(
           stats.detachedInstances++;
         }
 
-      } catch (error) {
-        console.warn(
-          "Instance detach skipped:",
-          safeName(child),
-          error
-        );
-
-
+      } catch (_) {
+        /*
+         * 나중에 screenshot 처리
+         */
         continue;
       }
     }
 
 
     if (
-      isAlive(child) &&
       hasChildren(child)
     ) {
       detachInstancesSafely(
@@ -1302,10 +1378,10 @@ function detachInstancesSafely(
 
 
 /* =========================================================
-   ROOT NORMALIZATION
+   ROOT FRAME
 ========================================================= */
 
-function copyValue(
+function copyProperty(
   source,
   target,
   key
@@ -1324,72 +1400,70 @@ function copyValue(
 }
 
 
-function copyRootAppearance(
+function copyAppearance(
   source,
-  frame
+  target
 ) {
-  copyValue(
+  copyProperty(
     source,
-    frame,
+    target,
     "fills"
   );
 
-
-  copyValue(
+  copyProperty(
     source,
-    frame,
+    target,
     "strokes"
   );
 
-
-  copyValue(
+  copyProperty(
     source,
-    frame,
+    target,
     "effects"
   );
 
 
   try {
-    frame.strokeWeight =
+    target.strokeWeight =
       source.strokeWeight;
   } catch (_) {}
 
 
   try {
-    frame.strokeAlign =
+    target.strokeAlign =
       source.strokeAlign;
   } catch (_) {}
 
 
   try {
-    frame.topLeftRadius =
+    target.topLeftRadius =
       source.topLeftRadius;
 
-    frame.topRightRadius =
+    target.topRightRadius =
       source.topRightRadius;
 
-    frame.bottomLeftRadius =
+    target.bottomLeftRadius =
       source.bottomLeftRadius;
 
-    frame.bottomRightRadius =
+    target.bottomRightRadius =
       source.bottomRightRadius;
   } catch (_) {}
 
 
   try {
-    frame.opacity =
+    target.opacity =
       source.opacity;
   } catch (_) {}
 
 
   try {
-    frame.blendMode =
+    target.blendMode =
       source.blendMode;
   } catch (_) {}
 
 
   try {
-    frame.clipsContent =
+    target.clipsContent =
       source.clipsContent;
   } catch (_) {}
 }
@@ -1397,7 +1471,7 @@ function copyRootAppearance(
 
 function convertRootToFrame(source) {
   if (!isAlive(source)) {
-    return null;
+    return source;
   }
 
 
@@ -1413,10 +1487,6 @@ function convertRootToFrame(source) {
   }
 
 
-  /*
-   * 다른 Instance 내부 Screen은
-   * 안전하게 변환 불가.
-   */
   if (
     safeType(parent) ===
       "INSTANCE" ||
@@ -1426,13 +1496,11 @@ function convertRootToFrame(source) {
   }
 
 
-  const sourceTransform =
-    safeAbsoluteTransform(
-      source
-    );
+  const transform =
+    safeAbsoluteTransform(source);
 
 
-  if (!sourceTransform) {
+  if (!transform) {
     return source;
   }
 
@@ -1443,11 +1511,8 @@ function convertRootToFrame(source) {
 
 
   try {
-    width =
-      source.width;
-
-    height =
-      source.height;
+    width = source.width;
+    height = source.height;
 
     index =
       parent.children.indexOf(
@@ -1456,7 +1521,7 @@ function convertRootToFrame(source) {
   } catch (_) {}
 
 
-  const childSnapshots =
+  const childData =
     childrenOf(source)
       .map(
         child => ({
@@ -1471,7 +1536,6 @@ function convertRootToFrame(source) {
       )
       .filter(
         item =>
-          item.node &&
           item.transform
       );
 
@@ -1488,15 +1552,8 @@ function convertRootToFrame(source) {
 
 
   frame.resize(
-    Math.max(
-      width,
-      0.01
-    ),
-
-    Math.max(
-      height,
-      0.01
-    )
+    Math.max(width, 0.01),
+    Math.max(height, 0.01)
   );
 
 
@@ -1507,9 +1564,10 @@ function convertRootToFrame(source) {
 
 
   if (
-    safeType(source) !== "GROUP"
+    safeType(source) !==
+    "GROUP"
   ) {
-    copyRootAppearance(
+    copyAppearance(
       source,
       frame
     );
@@ -1522,17 +1580,15 @@ function convertRootToFrame(source) {
   );
 
 
-  try {
-    frame.relativeTransform =
-      absoluteToRelative(
-        sourceTransform,
-        parent
-      );
-  } catch (_) {}
+  frame.relativeTransform =
+    absoluteToRelative(
+      transform,
+      parent
+    );
 
 
   for (
-    const item of childSnapshots
+    const item of childData
   ) {
     if (
       !isAlive(item.node)
@@ -1553,32 +1609,26 @@ function convertRootToFrame(source) {
           frame
         );
 
-    } catch (error) {
-      console.warn(
-        "Root child move skipped:",
-        safeName(item.node),
-        error
-      );
-    }
+    } catch (_) {}
+  }
+
+
+  if (
+    childrenOf(source)
+      .length === 0
+  ) {
+    safeRemove(source);
+
+    return frame;
   }
 
 
   /*
-   * Child가 하나라도 남았으면
-   * source 삭제 금지.
+   * 변환 실패
    */
-  if (
-    childrenOf(source).length > 0
-  ) {
-    safeRemove(frame);
+  safeRemove(frame);
 
-    return source;
-  }
-
-
-  safeRemove(source);
-
-  return frame;
+  return source;
 }
 
 
@@ -1588,19 +1638,17 @@ function normalizeRoot(root) {
   }
 
 
-  const type =
-    safeType(root);
-
-
   if (
-    type === "FRAME"
+    safeType(root) ===
+    "FRAME"
   ) {
     return root;
   }
 
 
   if (
-    type === "INSTANCE"
+    safeType(root) ===
+    "INSTANCE"
   ) {
     try {
       const detached =
@@ -1624,13 +1672,7 @@ function normalizeRoot(root) {
         );
       }
 
-    } catch (error) {
-      console.warn(
-        "Root Instance detach failed:",
-        error
-      );
-
-
+    } catch (_) {
       return root;
     }
   }
@@ -1643,56 +1685,8 @@ function normalizeRoot(root) {
 
 
 /* =========================================================
-   LAYER NAMING
+   NAMING
 ========================================================= */
-
-function looksLikeScreenshot(
-  node,
-  root
-) {
-  if (
-    safeType(node) !==
-      "RECTANGLE" ||
-    !hasImageFill(node)
-  ) {
-    return false;
-  }
-
-
-  const name =
-    safeName(node)
-      .toLowerCase();
-
-
-  if (
-    name.includes("screenshot") ||
-    name.includes("screen shot") ||
-    name.includes("스크린샷")
-  ) {
-    return true;
-  }
-
-
-  try {
-    if (
-      root.width > 0 &&
-      root.height > 0
-    ) {
-      return (
-        node.width /
-          root.width >=
-          0.7 &&
-        node.height /
-          root.height >=
-          0.5
-      );
-    }
-  } catch (_) {}
-
-
-  return false;
-}
-
 
 function looksLikeIcon(node) {
   const type =
@@ -1729,6 +1723,49 @@ function looksLikeIcon(node) {
 }
 
 
+function looksLikeScreenshot(
+  node,
+  root
+) {
+  if (
+    safeType(node) !==
+      "RECTANGLE" ||
+    !hasImageFill(node)
+  ) {
+    return false;
+  }
+
+
+  const name =
+    safeName(node)
+      .toLowerCase();
+
+
+  if (
+    name.includes("screenshot") ||
+    name.includes("screen shot") ||
+    name.includes("스크린샷")
+  ) {
+    return true;
+  }
+
+
+  try {
+    return (
+      node.width /
+        root.width >=
+        0.7 &&
+      node.height /
+        root.height >=
+        0.5
+    );
+
+  } catch (_) {
+    return false;
+  }
+}
+
+
 function normalizeLayerName(
   node,
   root
@@ -1753,7 +1790,6 @@ function normalizeLayerName(
       } catch (_) {}
     }
 
-
     return;
   }
 
@@ -1765,7 +1801,6 @@ function normalizeLayerName(
       node.name = "line";
     } catch (_) {}
 
-
     return;
   }
 
@@ -1776,7 +1811,6 @@ function normalizeLayerName(
     try {
       node.name = "icon";
     } catch (_) {}
-
 
     return;
   }
@@ -1803,7 +1837,6 @@ function normalizeLayerName(
       }
     } catch (_) {}
 
-
     return;
   }
 
@@ -1812,8 +1845,7 @@ function normalizeLayerName(
     type === "ELLIPSE"
   ) {
     try {
-      node.name =
-        "shape";
+      node.name = "shape";
     } catch (_) {}
   }
 }
@@ -1824,27 +1856,23 @@ function normalizeLayerName(
 ========================================================= */
 
 function snapshotVisual(node) {
-  if (!isAlive(node)) {
-    return null;
-  }
-
-
   const transform =
-    safeAbsoluteTransform(
-      node
-    );
+    safeAbsoluteTransform(node);
 
 
-  if (!transform) {
+  if (
+    !transform ||
+    !isAlive(node)
+  ) {
     return null;
   }
 
 
-  const snapshot = {
+  const result = {
+    transform,
+
     width: 1,
     height: 1,
-
-    transform,
 
     fills: null,
     strokes: null,
@@ -1860,10 +1888,10 @@ function snapshotVisual(node) {
 
 
   try {
-    snapshot.width =
+    result.width =
       node.width;
 
-    snapshot.height =
+    result.height =
       node.height;
   } catch (_) {}
 
@@ -1873,7 +1901,7 @@ function snapshotVisual(node) {
       node.fills !==
       figma.mixed
     ) {
-      snapshot.fills =
+      result.fills =
         node.fills;
     }
   } catch (_) {}
@@ -1884,40 +1912,37 @@ function snapshotVisual(node) {
       node.strokes !==
       figma.mixed
     ) {
-      snapshot.strokes =
+      result.strokes =
         node.strokes;
     }
   } catch (_) {}
 
 
   try {
-    snapshot.strokeWeight =
+    result.strokeWeight =
       node.strokeWeight;
-  } catch (_) {}
 
-
-  try {
-    snapshot.strokeAlign =
+    result.strokeAlign =
       node.strokeAlign;
   } catch (_) {}
 
 
   try {
-    snapshot.topLeftRadius =
+    result.topLeftRadius =
       node.topLeftRadius || 0;
 
-    snapshot.topRightRadius =
+    result.topRightRadius =
       node.topRightRadius || 0;
 
-    snapshot.bottomLeftRadius =
+    result.bottomLeftRadius =
       node.bottomLeftRadius || 0;
 
-    snapshot.bottomRightRadius =
+    result.bottomRightRadius =
       node.bottomRightRadius || 0;
   } catch (_) {}
 
 
-  return snapshot;
+  return result;
 }
 
 
@@ -1925,10 +1950,7 @@ function createVisualShell(
   snapshot,
   root
 ) {
-  if (
-    !snapshot ||
-    !isAlive(root)
-  ) {
+  if (!snapshot) {
     return null;
   }
 
@@ -1937,8 +1959,7 @@ function createVisualShell(
     figma.createRectangle();
 
 
-  rect.name =
-    "shape";
+  rect.name = "shape";
 
 
   rect.resize(
@@ -1946,7 +1967,6 @@ function createVisualShell(
       snapshot.width,
       0.01
     ),
-
     Math.max(
       snapshot.height,
       0.01
@@ -2024,13 +2044,7 @@ function createVisualShell(
 
     return rect;
 
-  } catch (error) {
-    console.warn(
-      "Visual shell failed:",
-      error
-    );
-
-
+  } catch (_) {
     safeRemove(rect);
 
     return null;
@@ -2055,29 +2069,27 @@ async function moveLeafToRoot(
   }
 
 
+  /*
+   * Text 이동 전 Font Load
+   */
   if (
-    safeType(node) === "TEXT"
+    safeType(node) ===
+    "TEXT"
   ) {
-    const fontsReady =
+    const ready =
       await ensureTextFontsLoaded(
         node
       );
 
 
-    if (!fontsReady) {
-      /*
-       * Text 자체를 이동 못 하면
-       * 이후 caller에서 parent bake 판단.
-       */
+    if (!ready) {
       return false;
     }
   }
 
 
   const transform =
-    safeAbsoluteTransform(
-      node
-    );
+    safeAbsoluteTransform(node);
 
 
   if (!transform) {
@@ -2105,7 +2117,8 @@ async function moveLeafToRoot(
 
 
     if (
-      safeType(node) === "TEXT" &&
+      safeType(node) ===
+        "TEXT" &&
       convertFontToInter
     ) {
       const converted =
@@ -2135,14 +2148,13 @@ async function moveLeafToRoot(
 
 
     stats.movedLayers++;
-    stats.finalLayers++;
 
 
     return true;
 
   } catch (error) {
     console.warn(
-      "Leaf move failed:",
+      "Move failed:",
       safeName(node),
       error
     );
@@ -2154,23 +2166,14 @@ async function moveLeafToRoot(
 
 
 /* =========================================================
-   CORE FORCE FLATTEN
+   FLATTEN
 ========================================================= */
-
-/*
- * 반환값
- *
- * true
- * → 이 Node 처리가 정상적으로 끝남
- *
- * false
- * → 구조 해체 실패
- */
 
 async function flattenNode(
   node,
   root,
-  stats
+  stats,
+  path
 ) {
   if (!isAlive(node)) {
     return true;
@@ -2178,19 +2181,18 @@ async function flattenNode(
 
 
   /* -----------------------------------------------------
-     Garbage
+     GARBAGE
   ----------------------------------------------------- */
 
   const garbageReason =
-    getGarbageReason(
-      node
-    );
+    getGarbageReason(node);
 
 
   if (garbageReason) {
     if (
-      shouldDeleteGarbage(
-        node
+      isSelectedGarbage(
+        node,
+        path
       )
     ) {
       if (
@@ -2204,12 +2206,15 @@ async function flattenNode(
     }
 
 
+    /*
+     * 체크되지 않은 Garbage는 유지.
+     */
     stats.protectedGarbage++;
   }
 
 
   /* -----------------------------------------------------
-     LEAF
+     NORMAL LEAF
   ----------------------------------------------------- */
 
   if (
@@ -2246,7 +2251,8 @@ async function flattenNode(
         return await flattenNode(
           detached,
           root,
-          stats
+          stats,
+          path
         );
       }
 
@@ -2254,17 +2260,15 @@ async function flattenNode(
 
 
     /*
-     * Detach 실패 → screenshot.
+     * Detach 실패 → screenshot
      */
     const snapshot =
-      await createBakeSnapshot(
-        node
-      );
+      await bakeNode(node);
 
 
     if (snapshot) {
       const screenshot =
-        createScreenshotLayer(
+        createScreenshot(
           snapshot,
           root
         );
@@ -2275,7 +2279,6 @@ async function flattenNode(
 
         stats.bakedAreas++;
         stats.removedContainers++;
-        stats.finalLayers++;
 
 
         return true;
@@ -2290,21 +2293,19 @@ async function flattenNode(
 
 
   /* -----------------------------------------------------
-     RISKY CONTAINER
+     COMPLEX CONTAINER
   ----------------------------------------------------- */
 
   if (
     mustBakeContainer(node)
   ) {
     const snapshot =
-      await createBakeSnapshot(
-        node
-      );
+      await bakeNode(node);
 
 
     if (snapshot) {
       const screenshot =
-        createScreenshotLayer(
+        createScreenshot(
           snapshot,
           root
         );
@@ -2315,7 +2316,6 @@ async function flattenNode(
 
         stats.bakedAreas++;
         stats.removedContainers++;
-        stats.finalLayers++;
 
 
         return true;
@@ -2323,9 +2323,6 @@ async function flattenNode(
     }
 
 
-    /*
-     * Bake마저 실패.
-     */
     stats.preservedAreas++;
 
     return false;
@@ -2333,33 +2330,28 @@ async function flattenNode(
 
 
   /* -----------------------------------------------------
-     SAFE CONTAINER
+     NORMAL FRAME / GROUP
   ----------------------------------------------------- */
 
   /*
-   * Container 자체 Background / Stroke.
+   * Container 자체 Fill / Stroke 재현
    */
   if (
     hasOwnVisual(node)
   ) {
-    const snapshot =
-      snapshotVisual(
-        node
+    const visual =
+      snapshotVisual(node);
+
+
+    const shell =
+      createVisualShell(
+        visual,
+        root
       );
 
 
-    if (snapshot) {
-      const shell =
-        createVisualShell(
-          snapshot,
-          root
-        );
-
-
-      if (shell) {
-        stats.visualShells++;
-        stats.finalLayers++;
-      }
+    if (shell) {
+      stats.visualShells++;
     }
   }
 
@@ -2368,115 +2360,78 @@ async function flattenNode(
     childrenOf(node);
 
 
-  /*
-   * 모든 Child 처리.
-   */
-  let allChildrenProcessed = true;
+  let success = true;
 
 
   for (
-    const child of children
+    let i = 0;
+    i < children.length;
+    i++
   ) {
+    const child =
+      children[i];
+
+
     if (!isAlive(child)) {
       continue;
     }
 
 
-    const success =
+    const childPath =
+      path === ""
+        ? String(i)
+        : `${path}/${i}`;
+
+
+    const result =
       await flattenNode(
         child,
         root,
-        stats
+        stats,
+        childPath
       );
 
 
-    if (!success) {
-      allChildrenProcessed = false;
+    if (!result) {
+      success = false;
     }
   }
 
 
   /*
-   * Child 중 하나라도 실패했다면
-   * Container 삭제하면 안 됨.
-   *
-   * 그러나 우리의 목표는 Container 0개이므로
-   * 남아있는 Container 전체를 screenshot fallback.
+   * 전부 빠졌으면 Container 삭제
    */
   if (
-    !allChildrenProcessed &&
-    isAlive(node)
+    isAlive(node) &&
+    childrenOf(node)
+      .length === 0
   ) {
-    const snapshot =
-      await createBakeSnapshot(
-        node
-      );
-
-
-    if (snapshot) {
-      const screenshot =
-        createScreenshotLayer(
-          snapshot,
-          root
-        );
-
-
-      if (screenshot) {
-        safeRemove(node);
-
-        stats.bakedAreas++;
-        stats.removedContainers++;
-        stats.finalLayers++;
-
-
-        return true;
-      }
-    }
-
-
-    stats.preservedAreas++;
-
-    return false;
-  }
-
-
-  /*
-   * 정상 처리 후 Container 제거.
-   */
-  if (
-    isAlive(node)
-  ) {
-    const remaining =
-      childrenOf(node);
-
-
     if (
-      remaining.length === 0
+      safeRemove(node)
     ) {
-      if (
-        safeRemove(node)
-      ) {
-        stats.removedContainers++;
-      }
-
-
-      return true;
+      stats.removedContainers++;
     }
 
 
-    /*
-     * 예상치 못하게 자식이 남음
-     * → Container 전체 Bake.
-     */
+    return true;
+  }
+
+
+  /*
+   * 일부 이동 실패
+   *
+   * 남아있는 부분만 screenshot 처리
+   */
+  if (
+    isAlive(node)
+  ) {
     const snapshot =
-      await createBakeSnapshot(
-        node
-      );
+      await bakeNode(node);
 
 
     if (snapshot) {
       const screenshot =
-        createScreenshotLayer(
+        createScreenshot(
           snapshot,
           root
         );
@@ -2487,54 +2442,131 @@ async function flattenNode(
 
         stats.bakedAreas++;
         stats.removedContainers++;
-        stats.finalLayers++;
 
 
         return true;
       }
     }
-
-
-    stats.preservedAreas++;
-
-    return false;
   }
 
 
-  return true;
+  stats.preservedAreas++;
+
+  return success;
 }
 
 
 /* =========================================================
-   FORCE REMAINING CONTAINER PASS
+   ROOT AUTO LAYOUT
 ========================================================= */
 
-function getRootContainers(root) {
+function disableRootAutoLayoutSafely(
+  root
+) {
+  if (
+    safeType(root) !==
+    "FRAME"
+  ) {
+    return;
+  }
+
+
+  let layoutMode = "NONE";
+
+
+  try {
+    layoutMode =
+      root.layoutMode;
+  } catch (_) {
+    return;
+  }
+
+
+  if (
+    layoutMode === "NONE"
+  ) {
+    return;
+  }
+
+
+  /*
+   * 현재 Child 위치 저장
+   */
+  const children =
+    childrenOf(root);
+
+
+  const snapshots =
+    children.map(
+      node => ({
+        node,
+
+        transform:
+          safeAbsoluteTransform(
+            node
+          )
+      })
+    );
+
+
+  try {
+    root.layoutMode =
+      "NONE";
+  } catch (_) {
+    return;
+  }
+
+
+  /*
+   * Auto Layout 해제 후 위치 복원
+   */
+  for (
+    const item of snapshots
+  ) {
+    if (
+      !item.transform ||
+      !isAlive(item.node)
+    ) {
+      continue;
+    }
+
+
+    try {
+      item.node.relativeTransform =
+        absoluteToRelative(
+          item.transform,
+          root
+        );
+    } catch (_) {}
+  }
+}
+
+
+/* =========================================================
+   REMAINING CONTAINER
+========================================================= */
+
+function rootContainers(root) {
   return childrenOf(root)
     .filter(
-      child =>
-        isContainer(child)
+      node =>
+        isContainer(node)
     );
 }
 
 
-/*
- * Root 아래 Container가 0개가 될 때까지
- * 재처리한다.
- */
-async function forceRemoveRemainingContainers(
+async function removeRemainingContainers(
   root,
   stats
 ) {
   for (
     let pass = 0;
-    pass < MAX_FLATTEN_PASSES;
+    pass <
+      MAX_FLATTEN_PASSES;
     pass++
   ) {
     const containers =
-      getRootContainers(
-        root
-      );
+      rootContainers(root);
 
 
     if (
@@ -2544,7 +2576,7 @@ async function forceRemoveRemainingContainers(
     }
 
 
-    let progress = 0;
+    let progress = false;
 
 
     for (
@@ -2555,54 +2587,49 @@ async function forceRemoveRemainingContainers(
       }
 
 
-      const beforeCount =
-        getRootContainers(root)
+      const before =
+        rootContainers(root)
           .length;
 
 
       await flattenNode(
         container,
         root,
-        stats
+        stats,
+        ""
       );
 
 
-      const afterCount =
-        getRootContainers(root)
+      const after =
+        rootContainers(root)
           .length;
 
 
       if (
-        afterCount < beforeCount
+        after < before
       ) {
-        progress++;
+        progress = true;
       }
     }
 
 
-    /*
-     * 아무 변화도 없으면 무한루프 방지.
-     */
-    if (
-      progress === 0
-    ) {
-      break;
+    if (!progress) {
+      return;
     }
   }
 }
 
 
 /* =========================================================
-   ROOT CLEAN
+   SCREEN CLEAN
 ========================================================= */
 
-async function cleanRoot(root) {
-  const stats =
-    createStats();
-
-
+async function cleanRoot(
+  root,
+  stats
+) {
   /*
-   * 내부 Instance 한 번 선제 Detach.
+   * 내부 Instance 1차 Detach
    */
   detachInstancesSafely(
     root,
@@ -2611,74 +2638,84 @@ async function cleanRoot(root) {
 
 
   /*
-   * Root Auto Layout 해제.
+   * Root Auto Layout 해제
    */
-  try {
-    if (
-      safeType(root) ===
-        "FRAME" &&
-      root.layoutMode !==
-        "NONE"
-    ) {
-      root.layoutMode =
-        "NONE";
-    }
-  } catch (_) {}
+  disableRootAutoLayoutSafely(
+    root
+  );
 
 
-  /*
-   * Root child snapshot.
-   */
   const children =
     childrenOf(root);
 
 
   for (
-    const child of children
+    let i = 0;
+    i < children.length;
+    i++
   ) {
+    const child =
+      children[i];
+
+
     if (!isAlive(child)) {
       continue;
     }
 
 
-    try {
-      await flattenNode(
-        child,
-        root,
-        stats
-      );
-
-    } catch (error) {
-      console.warn(
-        "Flatten skipped:",
-        safeName(child),
-        error
-      );
-
-
-      stats.preservedAreas++;
-    }
+    await flattenNode(
+      child,
+      root,
+      stats,
+      String(i)
+    );
   }
 
 
   /*
-   * 남은 Root Container 강제 제거.
+   * 혹시 남은 Container 다시 처리
    */
-  await forceRemoveRemainingContainers(
+  await removeRemainingContainers(
     root,
     stats
   );
 
 
-  return stats;
+  stats.finalLayers =
+    childrenOf(root)
+      .length;
 }
 
 
 /* =========================================================
    LAYER ORDER
+   =========================================================
+
+   중요:
+
+   Figma children
+   index 0     = 화면 뒤
+   last index  = 화면 앞
+
+   Layer Panel
+   화면 표시 순서는 반대.
+
+   그래서 Panel에서
+
+   Top
+   A
+   B
+   C
+   Bottom
+
+   을 만들려면 실제 children은
+
+   [ C, B, A ]
+
+   가 되어야 한다.
 ========================================================= */
 
-function getSimpleBounds(node) {
+function getSpatialBounds(node) {
   const bounds =
     safeBounds(node);
 
@@ -2704,7 +2741,10 @@ function getSimpleBounds(node) {
 }
 
 
-function boundsOverlap(a, b) {
+function boundsOverlap(
+  a,
+  b
+) {
   if (
     !a ||
     !b
@@ -2714,63 +2754,101 @@ function boundsOverlap(a, b) {
 
 
   return !(
-    a.x + a.width <= b.x ||
-    b.x + b.width <= a.x ||
-    a.y + a.height <= b.y ||
-    b.y + b.height <= a.y
+    a.x + a.width <=
+      b.x ||
+
+    b.x + b.width <=
+      a.x ||
+
+    a.y + a.height <=
+      b.y ||
+
+    b.y + b.height <=
+      a.y
   );
 }
 
 
-function canSpatiallySort(root) {
-  const children =
-    childrenOf(root);
-
-
-  const items =
-    children.map(
-      node => ({
-        bounds:
-          getSimpleBounds(node)
-      })
-    );
-
-
-  for (
-    let i = 0;
-    i < items.length;
-    i++
+/*
+ * 화면 읽기 순서 Comparator
+ *
+ * 1. 위 → 아래
+ * 2. 같은 줄이면 좌 → 우
+ */
+function compareSpatial(
+  a,
+  b
+) {
+  if (
+    !a.bounds ||
+    !b.bounds
   ) {
-    for (
-      let j = i + 1;
-      j < items.length;
-      j++
+    return (
+      a.originalPanelIndex -
+      b.originalPanelIndex
+    );
+  }
+
+
+  /*
+   * 같은 줄
+   */
+  if (
+    Math.abs(
+      a.bounds.y -
+      b.bounds.y
+    ) <= ROW_TOLERANCE
+  ) {
+    const xDiff =
+      a.bounds.x -
+      b.bounds.x;
+
+
+    if (
+      Math.abs(xDiff) >
+      0.1
     ) {
-      if (
-        boundsOverlap(
-          items[i].bounds,
-          items[j].bounds
-        )
-      ) {
-        return false;
-      }
+      return xDiff;
     }
   }
 
 
-  return true;
-}
+  /*
+   * 위 → 아래
+   */
+  const yDiff =
+    a.bounds.y -
+    b.bounds.y;
 
 
-function sortSpatiallyIfSafe(root) {
   if (
-    !isAlive(root) ||
-    !hasChildren(root)
+    Math.abs(yDiff) >
+    0.1
   ) {
-    return;
+    return yDiff;
   }
 
 
+  /*
+   * 좌표 동일 → 기존 Panel 순서
+   */
+  return (
+    a.originalPanelIndex -
+    b.originalPanelIndex
+  );
+}
+
+
+/*
+ * 겹치는 Layer끼리는
+ * 기존 Z-order 관계를 절대 바꾸지 않고,
+ *
+ * 그 외 Layer만
+ * 위→아래 / 좌→우로 정렬한다.
+ */
+function sortLayersTopToBottom(
+  root
+) {
   const children =
     childrenOf(root);
 
@@ -2783,103 +2861,169 @@ function sortSpatiallyIfSafe(root) {
 
 
   /*
-   * 겹침이 있으면 Z-order 우선.
+   * 현재 Layer Panel 순서.
+   *
+   * children의 역순이 Panel 위→아래 순서.
    */
-  if (
-    !canSpatiallySort(root)
-  ) {
-    return;
-  }
+  const originalPanelOrder =
+    [...children]
+      .reverse();
 
 
   const items =
-    children.map(
-      (node, originalIndex) => ({
+    originalPanelOrder.map(
+      (node, index) => ({
         node,
 
         bounds:
-          getSimpleBounds(node),
+          getSpatialBounds(node),
 
-        originalIndex
+        originalPanelIndex:
+          index,
+
+        outgoing:
+          new Set(),
+
+        indegree:
+          0
       })
     );
 
 
-  items.sort(
-    (a, b) => {
+  /*
+   * 겹치는 두 Layer는
+   * 기존 Panel 순서를 Constraint로 저장.
+   *
+   * items[i]가 원래 items[j]보다
+   * Panel 위에 있었다면 계속 위에 있어야 함.
+   */
+  for (
+    let i = 0;
+    i < items.length;
+    i++
+  ) {
+    for (
+      let j = i + 1;
+      j < items.length;
+      j++
+    ) {
+      const a =
+        items[i];
+
+      const b =
+        items[j];
+
+
       if (
-        !a.bounds ||
-        !b.bounds
+        boundsOverlap(
+          a.bounds,
+          b.bounds
+        )
       ) {
-        return (
-          a.originalIndex -
-          b.originalIndex
-        );
-      }
-
-
-      /*
-       * 같은 높이 → 좌 → 우
-       */
-      if (
-        Math.abs(
-          a.bounds.y -
-          b.bounds.y
-        ) <= ROW_TOLERANCE
-      ) {
-        const xDiff =
-          a.bounds.x -
-          b.bounds.x;
-
-
         if (
-          Math.abs(xDiff) >
-          0.1
+          !a.outgoing.has(b)
         ) {
-          return xDiff;
+          a.outgoing.add(b);
+
+          b.indegree++;
         }
       }
-
-
-      /*
-       * 위 → 아래
-       */
-      const yDiff =
-        a.bounds.y -
-        b.bounds.y;
-
-
-      if (
-        Math.abs(yDiff) >
-        0.1
-      ) {
-        return yDiff;
-      }
-
-
-      return (
-        a.originalIndex -
-        b.originalIndex
-      );
     }
-  );
+  }
 
 
   /*
-   * Layer Panel에서는 역순으로 보이므로 reverse.
+   * Topological Sort.
+   *
+   * 현재 Z-order 제약을 위반하지 않는 후보 중
+   * 화면상 가장 위/왼쪽 Layer를 먼저 선택.
    */
-  const figmaOrder =
-    [...items]
+  const available =
+    items.filter(
+      item =>
+        item.indegree === 0
+    );
+
+
+  const desiredPanelOrder = [];
+
+
+  while (
+    available.length > 0
+  ) {
+    available.sort(
+      compareSpatial
+    );
+
+
+    const current =
+      available.shift();
+
+
+    desiredPanelOrder.push(
+      current
+    );
+
+
+    for (
+      const next of
+      current.outgoing
+    ) {
+      next.indegree--;
+
+
+      if (
+        next.indegree === 0
+      ) {
+        available.push(next);
+      }
+    }
+  }
+
+
+  /*
+   * 이론상 Cycle 없음.
+   * 만약 문제 발생 시 정렬하지 않음.
+   */
+  if (
+    desiredPanelOrder.length !==
+    items.length
+  ) {
+    console.warn(
+      "Layer order sorting aborted."
+    );
+
+    return;
+  }
+
+
+  /*
+   * desiredPanelOrder:
+   *
+   * Panel 위 → 아래
+   *
+   * 실제 Figma children은 반대여야 함.
+   */
+  const desiredChildrenOrder =
+    desiredPanelOrder
+      .map(
+        item =>
+          item.node
+      )
       .reverse();
 
 
+  /*
+   * 순서 적용
+   */
   for (
     let i = 0;
-    i < figmaOrder.length;
+    i <
+      desiredChildrenOrder.length;
     i++
   ) {
     const node =
-      figmaOrder[i].node;
+      desiredChildrenOrder[i];
 
 
     if (!isAlive(node)) {
@@ -2893,7 +3037,13 @@ function sortSpatiallyIfSafe(root) {
         node
       );
 
-    } catch (_) {
+    } catch (error) {
+      console.warn(
+        "Layer order failed:",
+        safeName(node),
+        error
+      );
+
       return;
     }
   }
@@ -2931,7 +3081,7 @@ function analyzeScreen(root) {
 
   function walk(
     node,
-    path
+    displayPath
   ) {
     if (!isAlive(node)) {
       return;
@@ -2946,15 +3096,13 @@ function analyzeScreen(root) {
 
 
     const currentPath =
-      path
-        ? `${path} / ${name}`
+      displayPath
+        ? `${displayPath} / ${name}`
         : name;
 
 
     const garbageReason =
-      getGarbageReason(
-        node
-      );
+      getGarbageReason(node);
 
 
     if (garbageReason) {
@@ -2988,9 +3136,7 @@ function analyzeScreen(root) {
 
 
       if (
-        mustBakeContainer(
-          node
-        )
+        mustBakeContainer(node)
       ) {
         result.bakeCandidates++;
       }
@@ -3028,9 +3174,7 @@ function analyzeScreen(root) {
 
     if (
       node !== root &&
-      actuallyClipsChildren(
-        node
-      )
+      actuallyClipsChildren(node)
     ) {
       result.clips++;
     }
@@ -3115,22 +3259,35 @@ function analyzeScreen(root) {
 async function processRoot(
   originalRoot
 ) {
-  const emptyStats =
+  const stats =
     createStats();
 
 
   if (!isAlive(originalRoot)) {
     return {
       success: false,
-      root: originalRoot,
-      stats: emptyStats
+
+      root:
+        originalRoot,
+
+      stats
     };
   }
 
 
   /*
-   * Screen 자체가 다른 Instance 내부라면
-   * 직접 변경 불가.
+   * Garbage 선택 Path는
+   * 구조를 바꾸기 전에 반드시 생성.
+   */
+  approvedGarbagePaths =
+    prepareGarbagePaths(
+      originalRoot
+    );
+
+
+  /*
+   * 다른 Instance 내부 Root는
+   * 직접 조작 불가.
    */
   if (
     isInsideInstance(
@@ -3139,108 +3296,103 @@ async function processRoot(
   ) {
     return {
       success: false,
-      root: originalRoot,
-      stats: emptyStats
-    };
-  }
 
+      root:
+        originalRoot,
 
-  let root =
-    originalRoot;
-
-
-  try {
-    root =
-      normalizeRoot(
-        originalRoot
-      ) ||
-      originalRoot;
-
-  } catch (error) {
-    console.warn(
-      "Root normalization failed:",
-      safeName(originalRoot),
-      error
-    );
-  }
-
-
-  if (!isAlive(root)) {
-    return {
-      success: false,
-      root: originalRoot,
-      stats: emptyStats
+      stats
     };
   }
 
 
   /*
-   * Root Instance가 끝까지 남았다면
-   * 직접 정리하지 않는다.
+   * 최상위 Root → Frame
    */
+  let root =
+    normalizeRoot(
+      originalRoot
+    );
+
+
+  if (
+    !root ||
+    !isAlive(root)
+  ) {
+    return {
+      success: false,
+
+      root:
+        originalRoot,
+
+      stats
+    };
+  }
+
+
   if (
     safeType(root) ===
-      "INSTANCE"
+    "INSTANCE"
   ) {
     return {
       success: false,
+
       root,
-      stats: emptyStats
+
+      stats
     };
   }
 
 
-  const stats =
-    await cleanRoot(
-      root
-    );
-
-
   /*
-   * 최종 Container 검사.
+   * Flatten
    */
-  const remainingContainers =
-    getRootContainers(
-      root
-    );
-
-
-  /*
-   * 네 요구사항 기준 정상은 0개.
-   */
-  if (
-    remainingContainers.length >
-    0
-  ) {
-    console.warn(
-      "Remaining containers:",
-      remainingContainers.map(
-        node =>
-          safeName(node)
-      )
-    );
-  }
-
-
-  /*
-   * 안전한 경우 Layer Panel 정렬.
-   */
-  sortSpatiallyIfSafe(
-    root
+  await cleanRoot(
+    root,
+    stats
   );
 
 
   /*
-   * 최종 실제 Layer 수.
+   * 최종 레이어 Naming
+   *
+   * screenshot fallback 등
+   * 새로 생성된 Layer까지 포함.
    */
+  for (
+    const node of
+    childrenOf(root)
+  ) {
+    if (
+      !isContainer(node)
+    ) {
+      normalizeLayerName(
+        node,
+        root
+      );
+    }
+  }
+
+
+  /*
+   * 최종 Layer Panel 순서:
+   *
+   * 위 → 아래
+   * 같은 높이 → 좌 → 우
+   *
+   * 겹치는 Layer는 기존 Z-order 유지.
+   */
+  sortLayersTopToBottom(
+    root
+  );
+
+
   stats.finalLayers =
     childrenOf(root)
       .length;
 
 
   return {
-    success:
-      true,
+    success: true,
 
     root,
 
@@ -3250,7 +3402,7 @@ async function processRoot(
 
 
 /* =========================================================
-   UI MESSAGE
+   UI
 ========================================================= */
 
 figma.ui.onmessage =
@@ -3383,11 +3535,9 @@ async msg => {
 
           willConvertToFrame:
             safeType(root) !==
-              "FRAME",
+            "FRAME",
 
-          ...analyzeScreen(
-            root
-          )
+          ...analyzeScreen(root)
         })
       );
 
@@ -3412,10 +3562,13 @@ async msg => {
     msg.type ===
     "clean"
   ) {
+    /*
+     * UI Garbage Checkboxes에서
+     * 체크된 Layer ID 목록.
+     */
     approvedGarbageIds =
       new Set(
-        msg.garbageIds ||
-        []
+        msg.garbageIds || []
       );
 
 
@@ -3512,7 +3665,6 @@ async msg => {
             }
           }
 
-
         } catch (error) {
           console.warn(
             "Screen cleanup failed:",
@@ -3576,19 +3728,11 @@ async msg => {
           `${total.rolledBack}개 Screen은 처리하지 못했습니다.`
         );
 
-      } else if (
-        total.bakedAreas > 0
-      ) {
-        figma.notify(
-          `Cleanup 완료 · 복잡 영역 ${total.bakedAreas}개는 screenshot으로 보존했습니다.`
-        );
-
       } else {
         figma.notify(
-          "Cleanup 완료 · 1 Depth"
+          `Cleanup 완료 · Garbage ${total.removedGarbage}개 삭제`
         );
       }
-
 
     } catch (error) {
       console.error(
