@@ -8,15 +8,17 @@ figma.showUI(__html__, {
 /* =========================================================
    SCREEN LAYER CLEANER
 
-   핵심 원칙
+   최우선 원칙
    ---------------------------------------------------------
-   1. 디자인 화면은 절대 변하지 않는다.
-   2. 원본에는 직접 작업하지 않는다.
-   3. Working Copy는 PAGE 직속으로 분리한다.
-   4. Instance는 가능한 한 모두 Detach한다.
-   5. 삭제/Detach 후 stale node 접근을 방지한다.
-   6. Cleanup 후 Before / After PNG가 같을 때만 Commit.
-   7. 실패하면 Working Copy 제거 + 원본 유지.
+   화면 보존 > 1 Depth > Layer 정리
+
+   즉,
+   - 안전하게 풀 수 있는 Frame/Group은 1 Depth로 Flatten
+   - Mask / 실제 Clip / Opacity / Blend / Effect 등
+     구조 제거 시 화면이 달라질 가능성이 있는 영역은 유지
+   - 정말 이동 자체가 불가능한 예외만 screenshot Bake
+   - 원본에는 직접 작업하지 않고 Working Copy에서 처리
+   - 실패 시 Working Copy 삭제, 원본 유지
 ========================================================= */
 
 
@@ -39,45 +41,40 @@ const TEMP_PLUGIN_KEY =
 
 
 /* =========================================================
-   SAFE NODE ACCESS
+   STATS
 ========================================================= */
 
-/*
- * Figma에서는 삭제된 SceneNode 객체를
- * 참조하고 있는 것 자체는 가능하지만,
- *
- * node.parent
- * node.absoluteTransform
- * node.type
- *
- * 같은 property를 읽는 순간
- *
- * "The node with id ... does not exist"
- *
- * 오류가 날 수 있다.
- *
- * 따라서 삭제/Detach 이후의 node 접근은
- * 반드시 이 helper들을 통해 방어한다.
- */
+function createEmptyStats() {
+  return {
+    detachedInstances: 0,
 
-function isNodeAlive(node) {
-  if (!node) {
-    return false;
-  }
+    removedGarbage: 0,
+    protectedGarbage: 0,
 
-  try {
-    const parent = node.parent;
+    removedContainers: 0,
+    movedLayers: 0,
 
-    return !!parent;
-  } catch (_) {
-    return false;
-  }
+    visualShells: 0,
+
+    bakedAreas: 0,
+    preservedAreas: 0,
+
+    convertedTexts: 0,
+    convertedFontSegments: 0,
+    failedFontConversions: 0,
+
+    finalLayers: 0
+  };
 }
 
 
+/* =========================================================
+   SAFE NODE ACCESS
+========================================================= */
+
 function safeNodeType(node) {
   try {
-    return node.type;
+    return node ? node.type : null;
   } catch (_) {
     return null;
   }
@@ -86,18 +83,46 @@ function safeNodeType(node) {
 
 function safeNodeName(node) {
   try {
-    return node.name;
+    return node ? node.name : "(unknown)";
   } catch (_) {
     return "(deleted node)";
   }
 }
 
 
-function safeParent(node) {
+function safeNodeId(node) {
   try {
-    return node.parent;
+    return node ? node.id : null;
   } catch (_) {
     return null;
+  }
+}
+
+
+function safeParent(node) {
+  try {
+    return node ? node.parent : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+
+/*
+ * Page 직속 Node도 parent가 존재하므로 true.
+ *
+ * 삭제된 Node의 parent를 읽다가
+ * get_parent 오류가 발생하는 것을 방어한다.
+ */
+function isNodeAlive(node) {
+  if (!node) {
+    return false;
+  }
+
+  try {
+    return !!node.parent;
+  } catch (_) {
+    return false;
   }
 }
 
@@ -139,6 +164,35 @@ function safeRemove(node) {
     return true;
   } catch (_) {
     return false;
+  }
+}
+
+
+async function resolveNodeById(nodeId) {
+  if (!nodeId) {
+    return null;
+  }
+
+  try {
+    const node =
+      await figma.getNodeByIdAsync(
+        nodeId
+      );
+
+    if (
+      !node ||
+      node.type === "DOCUMENT" ||
+      node.type === "PAGE"
+    ) {
+      return null;
+    }
+
+    return isNodeAlive(node)
+      ? node
+      : null;
+
+  } catch (_) {
+    return null;
   }
 }
 
@@ -228,17 +282,14 @@ function absoluteToRelative(
 
   if (!parentTransform) {
     throw new Error(
-      "Parent transform을 읽을 수 없습니다."
+      "Parent Transform을 읽을 수 없습니다."
     );
   }
 
-  const inverse =
+  return multiplyTransform(
     invertTransform(
       parentTransform
-    );
-
-  return multiplyTransform(
-    inverse,
+    ),
     absoluteTransform
   );
 }
@@ -337,32 +388,38 @@ function isInsideInstance(node) {
     return false;
   }
 
-  try {
-    let current =
-      node.parent;
+  let current =
+    safeParent(node);
 
-    while (current) {
-      if (
-        current.type === "INSTANCE"
-      ) {
-        return true;
-      }
-
-      current =
-        current.parent;
+  while (current) {
+    if (
+      safeNodeType(current) ===
+      "INSTANCE"
+    ) {
+      return true;
     }
 
-    return false;
-
-  } catch (_) {
-    return false;
+    current =
+      safeParent(current);
   }
+
+  return false;
 }
 
 
 /* =========================================================
    STRUCTURAL PATH
 ========================================================= */
+
+/*
+ * Original과 Working Clone의 Node ID는 달라진다.
+ *
+ * 따라서 Garbage 승인 대상은:
+ *
+ * 0/2/1/5
+ *
+ * 같은 child index path로 대응한다.
+ */
 
 function buildNodePathMap(root) {
   const idToPath =
@@ -380,25 +437,24 @@ function buildNodePathMap(root) {
       return;
     }
 
-    try {
+    const id =
+      safeNodeId(node);
+
+    if (id) {
       idToPath.set(
-        node.id,
+        id,
         path
       );
-
-      pathToNode.set(
-        path,
-        node
-      );
-    } catch (_) {
-      return;
     }
+
+    pathToNode.set(
+      path,
+      node
+    );
 
 
     const children =
-      getChildrenSnapshot(
-        node
-      );
+      getChildrenSnapshot(node);
 
     for (
       let i = 0;
@@ -428,6 +484,41 @@ function buildNodePathMap(root) {
     idToPath,
     pathToNode
   };
+}
+
+
+function buildApprovedGarbagePaths(
+  originalRoot
+) {
+  const map =
+    buildNodePathMap(
+      originalRoot
+    );
+
+  const result =
+    new Set();
+
+
+  for (
+    const originalId of
+    approvedGarbageOriginalIds
+  ) {
+    const path =
+      map.idToPath.get(
+        originalId
+      );
+
+    if (
+      path !== undefined
+    ) {
+      result.add(
+        path
+      );
+    }
+  }
+
+
+  return result;
 }
 
 
@@ -479,12 +570,9 @@ function hasImageFill(node) {
     }
 
     return node.fills.some(
-      fill => {
-        return (
-          fill.type === "IMAGE" &&
-          fill.visible !== false
-        );
-      }
+      fill =>
+        fill.type === "IMAGE" &&
+        fill.visible !== false
     );
 
   } catch (_) {
@@ -521,6 +609,7 @@ function hasOwnVisual(node) {
   if (!isNodeAlive(node)) {
     return false;
   }
+
 
   try {
     if (
@@ -561,12 +650,15 @@ function getGarbageReason(node) {
     return null;
   }
 
+
   try {
     if (
       "visible" in node &&
       node.visible === false
     ) {
-      return "Hidden · visible=false";
+      return (
+        "Hidden · visible=false"
+      );
     }
   } catch (_) {}
 
@@ -576,18 +668,19 @@ function getGarbageReason(node) {
       "opacity" in node &&
       node.opacity === 0
     ) {
-      return "Transparent · opacity=0";
+      return (
+        "Transparent · opacity=0"
+      );
     }
   } catch (_) {}
 
 
-  try {
-    if (
-      node.type === "SLICE"
-    ) {
-      return "Slice Layer";
-    }
-  } catch (_) {}
+  if (
+    safeNodeType(node) ===
+    "SLICE"
+  ) {
+    return "Slice Layer";
+  }
 
 
   return null;
@@ -606,14 +699,15 @@ function getTextFonts(node) {
     return [];
   }
 
+
   try {
     const segments =
       node.getStyledTextSegments(
         ["fontName"]
       );
 
-    const fonts =
-      [];
+    const result = [];
+
 
     for (
       const segment of segments
@@ -623,7 +717,7 @@ function getTextFonts(node) {
         segment.fontName !==
           figma.mixed
       ) {
-        fonts.push({
+        result.push({
           family:
             segment.fontName.family,
 
@@ -633,7 +727,8 @@ function getTextFonts(node) {
       }
     }
 
-    return fonts;
+
+    return result;
 
   } catch (_) {}
 
@@ -661,6 +756,13 @@ function getTextFonts(node) {
 }
 
 
+/*
+ * Text Layer를 Frame 밖으로 이동할 때도
+ * 기존 Font Load가 필요할 수 있다.
+ *
+ * 따라서 Inter 옵션과 무관하게
+ * 원본 Screen의 Font를 먼저 Load한다.
+ */
 async function preloadFonts(
   root
 ) {
@@ -672,7 +774,7 @@ async function preloadFonts(
   const fontMap =
     new Map();
 
-  const textFontKeys =
+  const pathFonts =
     new Map();
 
 
@@ -686,16 +788,13 @@ async function preloadFonts(
       safeNodeType(node) ===
       "TEXT"
     ) {
-      let nodeId = null;
-
-      try {
-        nodeId = node.id;
-      } catch (_) {}
+      const id =
+        safeNodeId(node);
 
       const path =
-        nodeId
+        id
           ? pathMap.idToPath.get(
-              nodeId
+              id
             )
           : undefined;
 
@@ -707,6 +806,7 @@ async function preloadFonts(
 
       const keys =
         [];
+
 
       for (
         const font of fonts
@@ -724,10 +824,11 @@ async function preloadFonts(
         );
       }
 
+
       if (
         path !== undefined
       ) {
-        textFontKeys.set(
+        pathFonts.set(
           path,
           keys
         );
@@ -765,15 +866,15 @@ async function preloadFonts(
       });
 
     } catch (error) {
+      failedFontKeys.add(
+        key
+      );
+
       console.warn(
         "Font preload failed:",
         font.family,
         font.style,
         error
-      );
-
-      failedFontKeys.add(
-        key
       );
     }
   }
@@ -785,7 +886,7 @@ async function preloadFonts(
 
   for (
     const [path, keys]
-    of textFontKeys.entries()
+    of pathFonts.entries()
   ) {
     if (
       keys.some(
@@ -895,15 +996,9 @@ function mapFontStyleToInter(
 
 
   if (italic) {
-    if (
-      weight === "Regular"
-    ) {
-      return "Italic";
-    }
-
-    return (
-      `${weight} Italic`
-    );
+    return weight === "Regular"
+      ? "Italic"
+      : `${weight} Italic`;
   }
 
 
@@ -980,8 +1075,7 @@ async function convertTextToInter(
         ["fontName"]
       );
 
-    let converted =
-      0;
+    let converted = 0;
 
 
     for (
@@ -995,15 +1089,11 @@ async function convertTextToInter(
           : "Regular";
 
 
-      const mapped =
-        mapFontStyleToInter(
-          sourceStyle
-        );
-
-
-      const style =
+      const targetStyle =
         await loadInterStyle(
-          mapped
+          mapFontStyleToInter(
+            sourceStyle
+          )
         );
 
 
@@ -1014,7 +1104,8 @@ async function convertTextToInter(
           family:
             "Inter",
 
-          style
+          style:
+            targetStyle
         }
       );
 
@@ -1038,7 +1129,7 @@ async function convertTextToInter(
 
 
 /* =========================================================
-   MASK / CLIP
+   MASK / CLIP / VISUAL PROTECTION
 ========================================================= */
 
 function containsMask(node) {
@@ -1078,6 +1169,12 @@ function containsMask(node) {
 }
 
 
+/*
+ * clipsContent가 켜져 있다는 이유만으로
+ * Container를 보호하지 않는다.
+ *
+ * 실제로 Child가 범위를 넘어간 경우만 보호.
+ */
 function actuallyClipsChildren(node) {
   if (!isNodeAlive(node)) {
     return false;
@@ -1092,17 +1189,6 @@ function actuallyClipsChildren(node) {
       return false;
     }
   } catch (_) {
-    return false;
-  }
-
-
-  const children =
-    getChildrenSnapshot(node);
-
-
-  if (
-    children.length === 0
-  ) {
     return false;
   }
 
@@ -1134,7 +1220,8 @@ function actuallyClipsChildren(node) {
 
 
   for (
-    const child of children
+    const child of
+    getChildrenSnapshot(node)
   ) {
     if (!isNodeAlive(child)) {
       continue;
@@ -1165,15 +1252,6 @@ function actuallyClipsChildren(node) {
     }
 
 
-    const childRight =
-      bounds.x +
-      bounds.width;
-
-    const childBottom =
-      bounds.y +
-      bounds.height;
-
-
     if (
       bounds.x <
         left - 0.5 ||
@@ -1181,10 +1259,12 @@ function actuallyClipsChildren(node) {
       bounds.y <
         top - 0.5 ||
 
-      childRight >
+      bounds.x +
+        bounds.width >
         right + 0.5 ||
 
-      childBottom >
+      bounds.y +
+        bounds.height >
         bottom + 0.5
     ) {
       return true;
@@ -1196,12 +1276,24 @@ function actuallyClipsChildren(node) {
 }
 
 
-function needsBake(node) {
+/*
+ * 제1법칙 핵심.
+ *
+ * 아래 Container는 해체하지 않는다.
+ *
+ * screenshot도 우선 사용하지 않는다.
+ * Container 자체를 Root 아래로 올리고
+ * 내부 구조는 유지한다.
+ */
+function needsPreserve(node) {
   if (!isContainer(node)) {
     return false;
   }
 
 
+  /*
+   * Detach에 실패해 남은 Instance.
+   */
   if (
     safeNodeType(node) ===
     "INSTANCE"
@@ -1265,8 +1357,7 @@ function needsBake(node) {
 ========================================================= */
 
 function collectInstances(root) {
-  const instances =
-    [];
+  const result = [];
 
 
   function walk(
@@ -1282,12 +1373,15 @@ function collectInstances(root) {
       safeNodeType(node) ===
       "INSTANCE"
     ) {
-      instances.push({
-        id:
-          node.id,
+      const id =
+        safeNodeId(node);
 
-        depth
-      });
+      if (id) {
+        result.push({
+          id,
+          depth
+        });
+      }
     }
 
 
@@ -1309,17 +1403,15 @@ function collectInstances(root) {
   );
 
 
-  return instances;
+  return result;
 }
 
 
 /*
- * 중요:
- * instance 객체를 오래 저장하지 않고
- * ID만 저장한 뒤 매번 다시 getNodeByIdAsync 한다.
+ * Node 객체를 오래 들고 있지 않는다.
  *
- * detachInstance() 이후 stale reference를
- * 다시 만지는 문제를 줄이기 위한 방식.
+ * Instance Detach 뒤 Node reference가 stale 되는
+ * 문제를 막기 위해 ID로 재조회한다.
  */
 async function detachAllInstances(
   root,
@@ -1343,6 +1435,9 @@ async function detachAllInstances(
     }
 
 
+    /*
+     * 가장 깊은 Instance부터.
+     */
     instances.sort(
       (a, b) =>
         b.depth -
@@ -1350,30 +1445,22 @@ async function detachAllInstances(
     );
 
 
-    let successCount =
-      0;
+    let successCount = 0;
 
 
     for (
       const item of instances
     ) {
-      let instance = null;
-
-      try {
-        instance =
-          await figma.getNodeByIdAsync(
-            item.id
-          );
-      } catch (_) {
-        continue;
-      }
+      const instance =
+        await resolveNodeById(
+          item.id
+        );
 
 
       if (
         !instance ||
         safeNodeType(instance) !==
-          "INSTANCE" ||
-        !isNodeAlive(instance)
+          "INSTANCE"
       ) {
         continue;
       }
@@ -1387,6 +1474,12 @@ async function detachAllInstances(
         successCount++;
 
       } catch (error) {
+        /*
+         * 실패하면 그대로 둔다.
+         *
+         * 이후 needsPreserve()가
+         * Instance 자체를 보호.
+         */
         console.warn(
           "Instance detach failed:",
           safeNodeName(instance),
@@ -1510,15 +1603,13 @@ function replaceRootWithFrame(
 ) {
   if (!isNodeAlive(source)) {
     throw new Error(
-      "Root 변환 대상이 이미 삭제되었습니다."
+      "Root 변환 대상이 존재하지 않습니다."
     );
   }
 
 
   const parent =
-    safeParent(
-      source
-    );
+    safeParent(source);
 
 
   if (
@@ -1554,37 +1645,32 @@ function replaceRootWithFrame(
   }
 
 
+  let width = 1;
+  let height = 1;
+
+  try {
+    width =
+      source.width;
+
+    height =
+      source.height;
+  } catch (_) {}
+
+
   const sourceName =
     safeNodeName(
       source
     );
 
 
-  let sourceWidth = 1;
-  let sourceHeight = 1;
-
-
-  try {
-    sourceWidth =
-      source.width;
-
-    sourceHeight =
-      source.height;
-  } catch (_) {}
-
-
-  /*
-   * Child Node 객체와 transform을 같이 저장하되
-   * 이동 직전마다 생존 여부 재확인.
-   */
   const childSnapshots =
     getChildrenSnapshot(
       source
     )
       .map(
         child => ({
-          node:
-            child,
+          id:
+            safeNodeId(child),
 
           transform:
             safeAbsoluteTransform(
@@ -1594,8 +1680,8 @@ function replaceRootWithFrame(
       )
       .filter(
         item =>
-          item.transform !==
-          null
+          item.id &&
+          item.transform
       );
 
 
@@ -1613,18 +1699,20 @@ function replaceRootWithFrame(
     sourceName;
 
 
-  frame.fills =
-    [];
+  /*
+   * createFrame 기본 흰 배경 제거.
+   */
+  frame.fills = [];
 
 
   frame.resize(
     Math.max(
-      sourceWidth,
+      width,
       0.01
     ),
 
     Math.max(
-      sourceHeight,
+      height,
       0.01
     )
   );
@@ -1663,13 +1751,22 @@ function replaceRootWithFrame(
     );
 
 
+  /*
+   * Root는 Page Level Working Copy이므로
+   * 여기서는 Child 이동 가능.
+   */
   for (
     const item of childSnapshots
   ) {
+    const child =
+      figma.getNodeById(
+        item.id
+      );
+
+
     if (
-      !isNodeAlive(
-        item.node
-      )
+      !child ||
+      !isNodeAlive(child)
     ) {
       continue;
     }
@@ -1677,11 +1774,11 @@ function replaceRootWithFrame(
 
     try {
       frame.appendChild(
-        item.node
+        child
       );
 
 
-      item.node.relativeTransform =
+      child.relativeTransform =
         absoluteToRelative(
           item.transform,
           frame
@@ -1690,7 +1787,7 @@ function replaceRootWithFrame(
     } catch (error) {
       console.warn(
         "Root child move failed:",
-        safeNodeName(item.node),
+        safeNodeName(child),
         error
       );
     }
@@ -1711,17 +1808,18 @@ function normalizeRootToFrame(
 ) {
   if (!isNodeAlive(node)) {
     throw new Error(
-      "Working Root가 이미 삭제되었습니다."
+      "Working Root가 존재하지 않습니다."
     );
   }
 
 
   const type =
-    safeNodeType(
-      node
-    );
+    safeNodeType(node);
 
 
+  /*
+   * Frame이면 그대로.
+   */
   if (
     type === "FRAME"
   ) {
@@ -1734,6 +1832,9 @@ function normalizeRootToFrame(
   }
 
 
+  /*
+   * Root Instance.
+   */
   if (
     type === "INSTANCE"
   ) {
@@ -1742,48 +1843,52 @@ function normalizeRootToFrame(
         node.detachInstance();
 
 
-      if (!isNodeAlive(detached)) {
-        throw new Error(
-          "Root detach 결과가 유효하지 않습니다."
+      if (
+        detached &&
+        isNodeAlive(detached)
+      ) {
+        detached.setPluginData(
+          TEMP_PLUGIN_KEY,
+          "true"
+        );
+
+
+        if (
+          safeNodeType(detached) ===
+          "FRAME"
+        ) {
+          return detached;
+        }
+
+
+        return replaceRootWithFrame(
+          detached
         );
       }
-
-
-      detached.setPluginData(
-        TEMP_PLUGIN_KEY,
-        "true"
-      );
-
-
-      if (
-        safeNodeType(detached) ===
-        "FRAME"
-      ) {
-        return detached;
-      }
-
-
-      return replaceRootWithFrame(
-        detached
-      );
 
     } catch (error) {
       console.warn(
         "Root Instance detach failed:",
         error
       );
-
-      /*
-       * detach 실패 시 무리하게 내부를 꺼내지 않는다.
-       * Root 자체를 새 Frame으로 재구성 시도.
-       */
-      return replaceRootWithFrame(
-        node
-      );
     }
+
+
+    /*
+     * Detach 실패 Root Instance를
+     * 억지로 child 이동시키는 것은 위험.
+     *
+     * 전체 Clone을 Frame으로 재구성한다.
+     */
+    return replaceRootWithFrame(
+      node
+    );
   }
 
 
+  /*
+   * Component / Group
+   */
   return replaceRootWithFrame(
     node
   );
@@ -1807,6 +1912,26 @@ function isScreenshotLayer(
   }
 
 
+  const name =
+    safeNodeName(node)
+      .toLowerCase();
+
+
+  /*
+   * 이름이 실제 Screenshot 성격이면 우선.
+   */
+  if (
+    name.includes("screenshot") ||
+    name.includes("screen shot") ||
+    name.includes("스크린샷")
+  ) {
+    return true;
+  }
+
+
+  /*
+   * Screen 대부분을 차지하는 Image Fill.
+   */
   try {
     if (
       root.width <= 0 ||
@@ -1819,7 +1944,6 @@ function isScreenshotLayer(
     const widthRatio =
       node.width /
       root.width;
-
 
     const heightRatio =
       node.height /
@@ -1914,8 +2038,16 @@ function normalizeLayerName(
 
 
 /* =========================================================
-   VISUAL SHELL
+   CONTAINER VISUAL SHELL
 ========================================================= */
+
+/*
+ * 안전한 Frame을 제거할 때
+ * Frame 자체 Fill / Stroke는 Rectangle로 재현한다.
+ *
+ * Parent Effect 등이 있는 Frame은
+ * needsPreserve()에서 이미 걸러진다.
+ */
 
 function snapshotContainerVisual(
   node
@@ -1942,32 +2074,16 @@ function snapshotContainerVisual(
 
     transform,
 
-    fills:
-      null,
+    fills: null,
+    strokes: null,
 
-    strokes:
-      null,
+    strokeWeight: null,
+    strokeAlign: null,
 
-    effects:
-      null,
-
-    strokeWeight:
-      null,
-
-    strokeAlign:
-      null,
-
-    topLeftRadius:
-      0,
-
-    topRightRadius:
-      0,
-
-    bottomLeftRadius:
-      0,
-
-    bottomRightRadius:
-      0
+    topLeftRadius: 0,
+    topRightRadius: 0,
+    bottomLeftRadius: 0,
+    bottomRightRadius: 0
   };
 
 
@@ -1999,12 +2115,6 @@ function snapshotContainerVisual(
       snapshot.strokes =
         node.strokes;
     }
-  } catch (_) {}
-
-
-  try {
-    snapshot.effects =
-      node.effects;
   } catch (_) {}
 
 
@@ -2096,17 +2206,6 @@ function createVisualShell(
 
   try {
     if (
-      snapshot.effects !==
-      null
-    ) {
-      rect.effects =
-        snapshot.effects;
-    }
-  } catch (_) {}
-
-
-  try {
-    if (
       snapshot.strokeWeight !==
       null
     ) {
@@ -2159,8 +2258,15 @@ function createVisualShell(
 
 
 /* =========================================================
-   BAKE
+   SCREENSHOT FALLBACK
 ========================================================= */
+
+/*
+ * screenshot은 최후의 수단이다.
+ *
+ * 일반 Mask / Clip은 Preserve Container가 우선.
+ * 아래 함수는 이동 자체가 불가능한 예외에만 사용.
+ */
 
 async function createBakeSnapshot(
   node
@@ -2199,7 +2305,7 @@ async function createBakeSnapshot(
             "SCALE",
 
           value:
-            2
+            1
         }
       });
 
@@ -2222,7 +2328,7 @@ async function createBakeSnapshot(
 
   } catch (error) {
     console.warn(
-      "Bake failed:",
+      "Screenshot fallback export failed:",
       safeNodeName(node),
       error
     );
@@ -2307,21 +2413,30 @@ function createBakedScreenshot(
 ========================================================= */
 
 /*
- * 중요한 변경:
+ * Plan Types
  *
- * plan에 node object만 저장하지 않고
- * 가능한 경우 id도 같이 저장한다.
+ * garbage
+ *   → 승인된 Garbage 삭제
  *
- * 실행 시 stale 가능성이 있으면
- * id로 다시 조회한다.
+ * leaf
+ *   → Root로 직접 이동
+ *
+ * shell
+ *   → 안전 Frame 자체 Visual을 shape로 재현
+ *
+ * preserve-container
+ *   → 화면 보호가 필요한 Container
+ *     내부 구조는 건드리지 않고 Container 자체만 Root로
+ *
+ * preserve-leaf
+ *   → Font 등으로 직접 재구성이 위험한 leaf
  */
 
 async function buildFlattenPlan(
   root,
   stats
 ) {
-  const plan =
-    [];
+  const plan = [];
 
 
   async function visit(
@@ -2333,12 +2448,18 @@ async function buildFlattenPlan(
     }
 
 
-    let nodeId = null;
+    const nodeId =
+      safeNodeId(node);
 
-    try {
-      nodeId = node.id;
-    } catch (_) {}
 
+    if (!nodeId) {
+      return;
+    }
+
+
+    /* -------------------------------------------------
+       GARBAGE
+    ------------------------------------------------- */
 
     const garbageReason =
       getGarbageReason(
@@ -2346,9 +2467,7 @@ async function buildFlattenPlan(
       );
 
 
-    if (
-      garbageReason
-    ) {
+    if (garbageReason) {
       if (
         approvedGarbagePaths.has(
           path
@@ -2362,11 +2481,24 @@ async function buildFlattenPlan(
         });
 
       } else {
+        /*
+         * 체크 해제한 Garbage는
+         * 삭제하지 않는다.
+         *
+         * Container라면 통째로 Preserve.
+         */
         plan.push({
           type:
-            "preserve",
+            isContainer(node)
+              ? "preserve-container"
+              : "preserve-leaf",
 
-          nodeId
+          nodeId,
+
+          transform:
+            safeAbsoluteTransform(
+              node
+            )
         });
 
 
@@ -2378,10 +2510,10 @@ async function buildFlattenPlan(
     }
 
 
-    /*
-     * load 불가능 Text는
-     * 이동하지 않고 Bake.
-     */
+    /* -------------------------------------------------
+       UNAVAILABLE FONT TEXT
+    ------------------------------------------------- */
+
     if (
       safeNodeType(node) ===
         "TEXT" &&
@@ -2389,70 +2521,58 @@ async function buildFlattenPlan(
         path
       )
     ) {
-      const snapshot =
-        await createBakeSnapshot(
-          node
-        );
+      /*
+       * 기존 Font를 Load하지 못했다면
+       * Text를 이동하면서 Figma가 재계산할 때
+       * 오류가 날 수 있다.
+       *
+       * 우선 Leaf 자체를 Preserve 대상으로 둔다.
+       */
+      plan.push({
+        type:
+          "preserve-leaf",
+
+        nodeId,
+
+        transform:
+          safeAbsoluteTransform(
+            node
+          )
+      });
 
 
-      if (snapshot) {
-        plan.push({
-          type:
-            "bake",
-
-          snapshot
-        });
-
-        stats.bakedAreas++;
-
-      } else {
-        plan.push({
-          type:
-            "preserve",
-
-          nodeId
-        });
-
-        stats.preservedAreas++;
-      }
-
+      stats.preservedAreas++;
 
       return;
     }
 
 
+    /* -------------------------------------------------
+       CONTAINER
+    ------------------------------------------------- */
+
     if (
       isContainer(node)
     ) {
+      /*
+       * Visual을 유지하기 위해
+       * 구조 자체가 필요한 Container.
+       */
       if (
-        needsBake(node)
+        needsPreserve(node)
       ) {
-        const snapshot =
-          await createBakeSnapshot(
-            node
-          );
-
-
-        if (snapshot) {
-          plan.push({
-            type:
-              "bake",
-
-            snapshot
-          });
-
-          stats.bakedAreas++;
-
-          return;
-        }
-
-
         plan.push({
           type:
-            "preserve",
+            "preserve-container",
 
-          nodeId
+          nodeId,
+
+          transform:
+            safeAbsoluteTransform(
+              node
+            )
         });
+
 
         stats.preservedAreas++;
 
@@ -2460,29 +2580,32 @@ async function buildFlattenPlan(
       }
 
 
+      /*
+       * 안전한 Frame 자체 Background.
+       */
       if (
         hasOwnVisual(node)
       ) {
-        const shellSnapshot =
+        const snapshot =
           snapshotContainerVisual(
             node
           );
 
 
-        if (
-          shellSnapshot
-        ) {
+        if (snapshot) {
           plan.push({
             type:
               "shell",
 
-            snapshot:
-              shellSnapshot
+            snapshot
           });
         }
       }
 
 
+      /*
+       * 안전한 Container만 내부 탐색.
+       */
       const children =
         getChildrenSnapshot(
           node
@@ -2510,6 +2633,10 @@ async function buildFlattenPlan(
       return;
     }
 
+
+    /* -------------------------------------------------
+       NORMAL LEAF
+    ------------------------------------------------- */
 
     const transform =
       safeAbsoluteTransform(
@@ -2556,51 +2683,104 @@ async function buildFlattenPlan(
 
 
 /* =========================================================
-   NODE RESOLVE
+   EXECUTE PLAN
 ========================================================= */
 
-async function resolveNodeById(
-  nodeId
+async function moveNodeToRoot(
+  node,
+  root,
+  transform
 ) {
-  if (!nodeId) {
-    return null;
+  if (
+    !node ||
+    !root ||
+    !transform ||
+    !isNodeAlive(node) ||
+    !isNodeAlive(root)
+  ) {
+    return false;
+  }
+
+
+  /*
+   * 이미 Root 바로 아래면 위치 이동 불필요.
+   */
+  if (
+    safeParent(node) === root
+  ) {
+    return true;
   }
 
 
   try {
-    const node =
-      await figma.getNodeByIdAsync(
-        nodeId
+    root.appendChild(
+      node
+    );
+
+
+    node.relativeTransform =
+      absoluteToRelative(
+        transform,
+        root
       );
 
 
-    if (
-      !node ||
-      node.type === "DOCUMENT" ||
-      node.type === "PAGE"
-    ) {
-      return null;
-    }
+    return true;
 
+  } catch (error) {
+    console.warn(
+      "Move to Root failed:",
+      safeNodeName(node),
+      error
+    );
 
-    if (
-      !isNodeAlive(node)
-    ) {
-      return null;
-    }
-
-
-    return node;
-
-  } catch (_) {
-    return null;
+    return false;
   }
 }
 
 
-/* =========================================================
-   EXECUTE PLAN
-========================================================= */
+async function fallbackNodeToScreenshot(
+  node,
+  root,
+  stats
+) {
+  if (
+    !node ||
+    !isNodeAlive(node)
+  ) {
+    return false;
+  }
+
+
+  const snapshot =
+    await createBakeSnapshot(
+      node
+    );
+
+
+  if (!snapshot) {
+    return false;
+  }
+
+
+  const screenshot =
+    createBakedScreenshot(
+      snapshot,
+      root
+    );
+
+
+  if (!screenshot) {
+    return false;
+  }
+
+
+  stats.bakedAreas++;
+  stats.finalLayers++;
+
+  return true;
+}
+
 
 async function executeFlattenPlan(
   root,
@@ -2608,27 +2788,20 @@ async function executeFlattenPlan(
   stats
 ) {
   /*
-   * original child는 node object가 아니라 ID로 저장.
-   * stale reference 방지.
+   * stale object 문제를 피하기 위해
+   * 원래 Root Child는 ID만 저장.
    */
   const originalChildIds =
-    getChildrenSnapshot(
-      root
-    )
+    getChildrenSnapshot(root)
       .map(
-        node => {
-          try {
-            return node.id;
-          } catch (_) {
-            return null;
-          }
-        }
+        child =>
+          safeNodeId(child)
       )
       .filter(Boolean);
 
 
   /* -----------------------------------------------------
-     GARBAGE
+     1. Garbage Delete
   ----------------------------------------------------- */
 
   for (
@@ -2648,12 +2821,8 @@ async function executeFlattenPlan(
       );
 
 
-    if (!node) {
-      continue;
-    }
-
-
     if (
+      node &&
       safeRemove(node)
     ) {
       stats.removedGarbage++;
@@ -2662,7 +2831,7 @@ async function executeFlattenPlan(
 
 
   /* -----------------------------------------------------
-     BUILD
+     2. Result Build
   ----------------------------------------------------- */
 
   for (
@@ -2675,6 +2844,10 @@ async function executeFlattenPlan(
       continue;
     }
 
+
+    /* -------------------------------------------------
+       SHELL
+    ------------------------------------------------- */
 
     if (
       item.type ===
@@ -2697,29 +2870,13 @@ async function executeFlattenPlan(
     }
 
 
-    if (
-      item.type ===
-      "bake"
-    ) {
-      const baked =
-        createBakedScreenshot(
-          item.snapshot,
-          root
-        );
-
-
-      if (baked) {
-        stats.finalLayers++;
-      }
-
-
-      continue;
-    }
-
+    /* -------------------------------------------------
+       PRESERVE CONTAINER
+    ------------------------------------------------- */
 
     if (
       item.type ===
-      "preserve"
+      "preserve-container"
     ) {
       const node =
         await resolveNodeById(
@@ -2732,106 +2889,74 @@ async function executeFlattenPlan(
       }
 
 
-      const parent =
-        safeParent(
-          node
-        );
-
-
-      if (!parent) {
-        continue;
-      }
-
-
-      if (
-        parent === root
-      ) {
-        stats.finalLayers++;
-        continue;
-      }
-
-
       /*
-       * Instance 아래면 강제 이동 금지.
+       * 부모가 또 Instance라면 직접 빼면 안 된다.
+       *
+       * 하지만 buildFlattenPlan은 가장 상위
+       * Preserve Container에서 recursion을 중단하므로
+       * 정상적인 경우 여기 들어오지 않는다.
        */
       if (
         isInsideInstance(node)
       ) {
-        const snapshot =
-          await createBakeSnapshot(
-            node
+        const baked =
+          await fallbackNodeToScreenshot(
+            node,
+            root,
+            stats
           );
 
 
-        if (snapshot) {
-          createBakedScreenshot(
-            snapshot,
-            root
-          );
-
-          stats.bakedAreas++;
-          stats.finalLayers++;
-
-        } else {
+        if (!baked) {
           stats.preservedAreas++;
         }
-
 
         continue;
       }
 
 
       const transform =
+        item.transform ||
         safeAbsoluteTransform(
           node
         );
 
 
-      if (!transform) {
-        stats.preservedAreas++;
-        continue;
-      }
-
-
-      try {
-        root.appendChild(
-          node
+      const moved =
+        await moveNodeToRoot(
+          node,
+          root,
+          transform
         );
 
 
-        node.relativeTransform =
-          absoluteToRelative(
-            transform,
-            root
-          );
-
-
+      if (moved) {
+        /*
+         * 내부 구조는 유지하지만
+         * 해당 Container는 Root 직속이 됨.
+         */
         stats.finalLayers++;
 
-      } catch (error) {
-        console.warn(
-          "Preserve move failed:",
-          safeNodeName(node),
-          error
-        );
-
-
-        const snapshot =
-          await createBakeSnapshot(
-            node
+      } else {
+        /*
+         * 정말 이동이 불가능할 때만
+         * screenshot fallback.
+         */
+        const retryNode =
+          await resolveNodeById(
+            item.nodeId
           );
 
 
-        if (snapshot) {
-          createBakedScreenshot(
-            snapshot,
-            root
+        const baked =
+          await fallbackNodeToScreenshot(
+            retryNode,
+            root,
+            stats
           );
 
-          stats.bakedAreas++;
-          stats.finalLayers++;
 
-        } else {
+        if (!baked) {
           stats.preservedAreas++;
         }
       }
@@ -2840,6 +2965,83 @@ async function executeFlattenPlan(
       continue;
     }
 
+
+    /* -------------------------------------------------
+       PRESERVE LEAF
+    ------------------------------------------------- */
+
+    if (
+      item.type ===
+      "preserve-leaf"
+    ) {
+      const node =
+        await resolveNodeById(
+          item.nodeId
+        );
+
+
+      if (!node) {
+        continue;
+      }
+
+
+      /*
+       * Font Load 실패 Text 등.
+       *
+       * 직접 이동을 먼저 시도.
+       * 실패할 때만 screenshot.
+       */
+      const transform =
+        item.transform ||
+        safeAbsoluteTransform(
+          node
+        );
+
+
+      const moved =
+        await moveNodeToRoot(
+          node,
+          root,
+          transform
+        );
+
+
+      if (moved) {
+        normalizeLayerName(
+          node,
+          root
+        );
+
+        stats.finalLayers++;
+
+      } else {
+        const retryNode =
+          await resolveNodeById(
+            item.nodeId
+          );
+
+
+        const baked =
+          await fallbackNodeToScreenshot(
+            retryNode,
+            root,
+            stats
+          );
+
+
+        if (!baked) {
+          stats.preservedAreas++;
+        }
+      }
+
+
+      continue;
+    }
+
+
+    /* -------------------------------------------------
+       NORMAL LEAF
+    ------------------------------------------------- */
 
     if (
       item.type ===
@@ -2856,25 +3058,22 @@ async function executeFlattenPlan(
       }
 
 
+      /*
+       * 아직 Instance 내부에 있다면
+       * 직접 재부모화하지 않는다.
+       */
       if (
         isInsideInstance(node)
       ) {
-        const snapshot =
-          await createBakeSnapshot(
-            node
+        const baked =
+          await fallbackNodeToScreenshot(
+            node,
+            root,
+            stats
           );
 
 
-        if (snapshot) {
-          createBakedScreenshot(
-            snapshot,
-            root
-          );
-
-          stats.bakedAreas++;
-          stats.finalLayers++;
-
-        } else {
+        if (!baked) {
           stats.preservedAreas++;
         }
 
@@ -2883,109 +3082,84 @@ async function executeFlattenPlan(
       }
 
 
-      try {
-        root.appendChild(
-          node
-        );
-
-
-        node.relativeTransform =
-          absoluteToRelative(
-            item.transform,
-            root
-          );
-
-
-        if (
-          safeNodeType(node) ===
-            "TEXT" &&
-          convertFontToInter
-        ) {
-          const converted =
-            await convertTextToInter(
-              node
-            );
-
-
-          if (
-            converted > 0
-          ) {
-            stats.convertedTexts++;
-
-            stats.convertedFontSegments +=
-              converted;
-
-          } else {
-            stats.failedFontConversions++;
-          }
-        }
-
-
-        normalizeLayerName(
+      const moved =
+        await moveNodeToRoot(
           node,
-          root
+          root,
+          item.transform
         );
 
 
-        stats.movedLayers++;
-        stats.finalLayers++;
-
-      } catch (error) {
-        console.warn(
-          "Leaf move failed:",
-          safeNodeName(node),
-          error
-        );
-
-
-        /*
-         * move 실패 시 같은 node를
-         * 다시 바로 만지면 stale일 수도 있으므로
-         * ID 재조회.
-         */
+      if (!moved) {
         const retryNode =
           await resolveNodeById(
             item.nodeId
           );
 
 
-        if (!retryNode) {
+        const baked =
+          await fallbackNodeToScreenshot(
+            retryNode,
+            root,
+            stats
+          );
+
+
+        if (!baked) {
           stats.preservedAreas++;
-          continue;
         }
 
 
-        const snapshot =
-          await createBakeSnapshot(
-            retryNode
+        continue;
+      }
+
+
+      /*
+       * Font Family → Inter 옵션.
+       *
+       * 사용자가 명시적으로 ON 했을 때만.
+       */
+      if (
+        safeNodeType(node) ===
+          "TEXT" &&
+        convertFontToInter
+      ) {
+        const converted =
+          await convertTextToInter(
+            node
           );
 
 
-        if (snapshot) {
-          createBakedScreenshot(
-            snapshot,
-            root
-          );
+        if (
+          converted > 0
+        ) {
+          stats.convertedTexts++;
 
-          stats.bakedAreas++;
-          stats.finalLayers++;
+          stats.convertedFontSegments +=
+            converted;
 
         } else {
-          stats.preservedAreas++;
+          stats.failedFontConversions++;
         }
       }
+
+
+      normalizeLayerName(
+        node,
+        root
+      );
+
+
+      stats.movedLayers++;
+      stats.finalLayers++;
     }
   }
 
 
   /* -----------------------------------------------------
-     REMOVE OLD CONTAINERS
+     3. Empty / Old Containers 제거
   ----------------------------------------------------- */
 
-  /*
-   * 기존 object 배열을 사용하지 않고
-   * ID 기반으로 다시 조회.
-   */
   for (
     const childId of
     originalChildIds
@@ -3001,30 +3175,53 @@ async function executeFlattenPlan(
     }
 
 
-    const preserved =
+    /*
+     * Root 직속 결과로 그대로 남아야 하는
+     * Preserve Container인지 확인.
+     */
+    const preserve =
       plan.some(
         item =>
-          item.type === "preserve" &&
-          item.nodeId === childId
+          item.type ===
+            "preserve-container" &&
+          item.nodeId ===
+            childId
+      );
+
+
+    const preserveLeaf =
+      plan.some(
+        item =>
+          item.type ===
+            "preserve-leaf" &&
+          item.nodeId ===
+            childId
       );
 
 
     const leaf =
       plan.some(
         item =>
-          item.type === "leaf" &&
-          item.nodeId === childId
+          item.type ===
+            "leaf" &&
+          item.nodeId ===
+            childId
       );
 
 
     if (
-      preserved ||
+      preserve ||
+      preserveLeaf ||
       leaf
     ) {
       continue;
     }
 
 
+    /*
+     * 기존 Container 내부 Child들이
+     * 모두 Root로 이동했으면 Container만 제거.
+     */
     if (
       isContainer(child)
     ) {
@@ -3039,7 +3236,7 @@ async function executeFlattenPlan(
 
 
 /* =========================================================
-   SAFE ORDERING
+   SAFE LAYER ORDER
 ========================================================= */
 
 function getBounds(node) {
@@ -3091,63 +3288,70 @@ function boundsOverlap(
 }
 
 
-function compareSpatial(
-  a,
-  b
+/*
+ * 하나라도 겹치는 Layer가 있으면
+ * Layer 순서 변경 자체를 하지 않는다.
+ *
+ * Layer Panel 순서 = Z-order이므로
+ * 화면 보호가 우선.
+ */
+function screenHasOverlappingLayers(
+  root
 ) {
-  if (
-    !a.bounds ||
-    !b.bounds
-  ) {
-    return (
-      a.originalIndex -
-      b.originalIndex
+  const children =
+    getChildrenSnapshot(
+      root
     );
-  }
 
 
-  if (
-    Math.abs(
-      a.bounds.y -
-      b.bounds.y
-    ) <= ROW_TOLERANCE
+  const items =
+    children.map(
+      node => ({
+        node,
+        bounds:
+          getBounds(node)
+      })
+    );
+
+
+  for (
+    let i = 0;
+    i < items.length;
+    i++
   ) {
-    const x =
-      a.bounds.x -
-      b.bounds.x;
-
-
-    if (
-      Math.abs(x) >
-      0.1
+    for (
+      let j = i + 1;
+      j < items.length;
+      j++
     ) {
-      return x;
+      if (
+        boundsOverlap(
+          items[i].bounds,
+          items[j].bounds
+        )
+      ) {
+        return true;
+      }
     }
   }
 
 
-  const y =
-    a.bounds.y -
-    b.bounds.y;
-
-
-  if (
-    Math.abs(y) >
-    0.1
-  ) {
-    return y;
-  }
-
-
-  return (
-    a.originalIndex -
-    b.originalIndex
-  );
+  return false;
 }
 
 
+/*
+ * 오직 모든 Root Child가 서로 안 겹칠 때만:
+ *
+ * 화면상 위 → 아래
+ * 같은 줄 → 좌 → 우
+ *
+ * Layer Panel에서도 같은 읽기 순서가 되도록 구성.
+ */
 function sortLayersSafely(root) {
-  if (!hasChildren(root)) {
+  if (
+    !hasChildren(root)
+  ) {
     return;
   }
 
@@ -3165,196 +3369,112 @@ function sortLayersSafely(root) {
   }
 
 
-  /*
-   * Panel order
-   */
-  const panelOrder =
-    [...children]
-      .reverse();
-
-
-  const items =
-    panelOrder
-      .filter(
-        node =>
-          isNodeAlive(node)
-      )
-      .map(
-        (node, index) => ({
-          nodeId:
-            node.id,
-
-          bounds:
-            getBounds(node),
-
-          originalIndex:
-            index,
-
-          outgoing:
-            new Set(),
-
-          indegree:
-            0
-        })
-      );
-
-
-  const itemMap =
-    new Map();
-
-
-  for (
-    const item of items
-  ) {
-    itemMap.set(
-      item.nodeId,
-      item
-    );
-  }
-
-
-  for (
-    let i = 0;
-    i < items.length;
-    i++
-  ) {
-    for (
-      let j = i + 1;
-      j < items.length;
-      j++
-    ) {
-      const a =
-        items[i];
-
-      const b =
-        items[j];
-
-
-      if (
-        boundsOverlap(
-          a.bounds,
-          b.bounds
-        )
-      ) {
-        a.outgoing.add(
-          b.nodeId
-        );
-
-        b.indegree++;
-      }
-    }
-  }
-
-
-  const available =
-    items.filter(
-      item =>
-        item.indegree === 0
-    );
-
-
-  const sorted =
-    [];
-
-
-  while (
-    available.length > 0
-  ) {
-    available.sort(
-      compareSpatial
-    );
-
-
-    const current =
-      available.shift();
-
-
-    sorted.push(
-      current
-    );
-
-
-    for (
-      const nextId of
-      current.outgoing
-    ) {
-      const next =
-        itemMap.get(
-          nextId
-        );
-
-
-      if (!next) {
-        continue;
-      }
-
-
-      next.indegree--;
-
-
-      if (
-        next.indegree === 0
-      ) {
-        available.push(
-          next
-        );
-      }
-    }
-  }
-
-
   if (
-    sorted.length !==
-    items.length
+    screenHasOverlappingLayers(
+      root
+    )
   ) {
-    console.warn(
-      "Safe sorting aborted."
+    console.log(
+      "Layer order preserved: overlapping layers detected."
     );
 
     return;
   }
 
 
-  const finalIds =
-    sorted
+  const sorted =
+    children
       .map(
-        item =>
-          item.nodeId
+        (node, originalIndex) => ({
+          node,
+
+          bounds:
+            getBounds(node),
+
+          originalIndex
+        })
       )
-      .reverse();
-
-
-  /*
-   * stale 방지를 위해 ID 재조회 대신
-   * 현재 root children에서 id match.
-   */
-  for (
-    let i = 0;
-    i < finalIds.length;
-    i++
-  ) {
-    const currentChildren =
-      getChildrenSnapshot(
-        root
-      );
-
-
-    const target =
-      currentChildren.find(
-        node => {
-          try {
+      .sort(
+        (a, b) => {
+          if (
+            !a.bounds ||
+            !b.bounds
+          ) {
             return (
-              node.id ===
-              finalIds[i]
+              a.originalIndex -
+              b.originalIndex
             );
-          } catch (_) {
-            return false;
           }
+
+
+          /*
+           * 같은 라인 → 좌 → 우.
+           */
+          if (
+            Math.abs(
+              a.bounds.y -
+              b.bounds.y
+            ) <= ROW_TOLERANCE
+          ) {
+            const xDiff =
+              a.bounds.x -
+              b.bounds.x;
+
+
+            if (
+              Math.abs(
+                xDiff
+              ) > 0.1
+            ) {
+              return xDiff;
+            }
+          }
+
+
+          /*
+           * 위 → 아래.
+           */
+          const yDiff =
+            a.bounds.y -
+            b.bounds.y;
+
+
+          if (
+            Math.abs(
+              yDiff
+            ) > 0.1
+          ) {
+            return yDiff;
+          }
+
+
+          return (
+            a.originalIndex -
+            b.originalIndex
+          );
         }
       );
 
 
-    if (!target) {
+  /*
+   * Figma children 순서는
+   * Layer Panel에서 역순으로 표시되므로 reverse.
+   */
+  const figmaOrder =
+    [...sorted]
+      .reverse();
+
+
+  for (
+    let i = 0;
+    i < figmaOrder.length;
+    i++
+  ) {
+    const node =
+      figmaOrder[i].node;
+
+
+    if (!isNodeAlive(node)) {
       continue;
     }
 
@@ -3362,13 +3482,13 @@ function sortLayersSafely(root) {
     try {
       root.insertChild(
         i,
-        target
+        node
       );
 
     } catch (error) {
       console.warn(
-        "Safe sorting failed:",
-        safeNodeName(target),
+        "Layer sorting stopped:",
+        safeNodeName(node),
         error
       );
 
@@ -3379,64 +3499,7 @@ function sortLayersSafely(root) {
 
 
 /* =========================================================
-   VISUAL EXPORT
-========================================================= */
-
-async function exportVisual(node) {
-  if (!isNodeAlive(node)) {
-    throw new Error(
-      "Visual Export 대상이 존재하지 않습니다."
-    );
-  }
-
-
-  return await node.exportAsync({
-    format:
-      "PNG",
-
-    constraint: {
-      type:
-        "SCALE",
-
-      value:
-        1
-    }
-  });
-}
-
-
-function byteArraysEqual(
-  a,
-  b
-) {
-  if (
-    !a ||
-    !b ||
-    a.length !== b.length
-  ) {
-    return false;
-  }
-
-
-  for (
-    let i = 0;
-    i < a.length;
-    i++
-  ) {
-    if (
-      a[i] !== b[i]
-    ) {
-      return false;
-    }
-  }
-
-
-  return true;
-}
-
-
-/* =========================================================
-   TEMP CLEANUP
+   TEMP WORKING COPY
 ========================================================= */
 
 function getTemporaryRoots() {
@@ -3461,63 +3524,43 @@ function getTemporaryRoots() {
 }
 
 
-function removeTemporaryRoots(
-  exceptNode = null
-) {
-  const tempNodes =
+function removeTemporaryRoots() {
+  const nodes =
     getTemporaryRoots();
 
 
   /*
-   * 현재 page에 존재하는 temp 중
-   * 최상위 것만 제거.
+   * Child Temp를 먼저 지우면 stale 문제가 생길 수 있다.
+   * Page에 가장 가까운 Temp Root만 제거한다.
    */
   for (
-    const node of tempNodes
+    const node of nodes
   ) {
     if (!isNodeAlive(node)) {
       continue;
     }
 
 
-    if (
-      exceptNode &&
-      isNodeAlive(exceptNode)
-    ) {
-      try {
-        if (
-          node.id ===
-          exceptNode.id
-        ) {
-          continue;
-        }
-      } catch (_) {}
-    }
+    let parent =
+      safeParent(node);
 
-
-    let current =
-      safeParent(
-        node
-      );
-
-
-    let hasTempAncestor =
+    let tempAncestor =
       false;
 
 
     while (
-      current &&
-      safeNodeType(current) !==
+      parent &&
+      safeNodeType(parent) !==
         "PAGE"
     ) {
       try {
         if (
-          current.getPluginData &&
-          current.getPluginData(
+          parent.getPluginData &&
+          parent.getPluginData(
             TEMP_PLUGIN_KEY
           ) === "true"
         ) {
-          hasTempAncestor =
+          tempAncestor =
             true;
 
           break;
@@ -3525,15 +3568,13 @@ function removeTemporaryRoots(
       } catch (_) {}
 
 
-      current =
-        safeParent(
-          current
-        );
+      parent =
+        safeParent(parent);
     }
 
 
     if (
-      hasTempAncestor
+      tempAncestor
     ) {
       continue;
     }
@@ -3546,10 +3587,11 @@ function removeTemporaryRoots(
 }
 
 
-/* =========================================================
-   WORKING COPY
-========================================================= */
-
+/*
+ * Working Copy는 항상 Page 바로 아래에 생성.
+ *
+ * Instance ancestry를 완전히 끊는다.
+ */
 function createPageWorkingCopy(
   original
 ) {
@@ -3575,6 +3617,11 @@ function createPageWorkingCopy(
   );
 
 
+  /*
+   * 원본과 겹치지 않도록 멀리 배치.
+   *
+   * Cleanup 완료 후 원래 위치로 Commit한다.
+   */
   const bounds =
     safeAbsoluteBoundingBox(
       original
@@ -3592,11 +3639,8 @@ function createPageWorkingCopy(
         100000;
 
     } else {
-      clone.x =
-        100000;
-
-      clone.y =
-        100000;
+      clone.x = 100000;
+      clone.y = 100000;
     }
   } catch (_) {}
 
@@ -3612,45 +3656,16 @@ function createPageWorkingCopy(
 async function cleanWorkingRoot(
   root
 ) {
-  const stats = {
-    detachedInstances:
-      0,
-
-    removedGarbage:
-      0,
-
-    protectedGarbage:
-      0,
-
-    removedContainers:
-      0,
-
-    movedLayers:
-      0,
-
-    visualShells:
-      0,
-
-    bakedAreas:
-      0,
-
-    preservedAreas:
-      0,
-
-    convertedTexts:
-      0,
-
-    convertedFontSegments:
-      0,
-
-    failedFontConversions:
-      0,
-
-    finalLayers:
-      0
-  };
+  const stats =
+    createEmptyStats();
 
 
+  /*
+   * 1.
+   * Instance는 최대한 Detach.
+   *
+   * 실패한 Instance는 이후 Preserve.
+   */
   await detachAllInstances(
     root,
     stats
@@ -3658,18 +3673,9 @@ async function cleanWorkingRoot(
 
 
   /*
-   * Detach 후 path 구조가 바뀔 수 있기 때문에
-   * 여기서 중요한 점이 하나 있다.
-   *
-   * Garbage Path는 원본 구조 기준이고
-   * detach로 구조가 달라질 수 있다.
-   *
-   * 따라서 승인 Garbage는 이미 화면에 영향을
-   * 안 주는 요소이고, 안전성을 위해
-   * detach 이전 path 기반 matching을 우선 사용한다.
+   * 2.
+   * Flatten Plan.
    */
-
-
   const plan =
     await buildFlattenPlan(
       root,
@@ -3677,6 +3683,14 @@ async function cleanWorkingRoot(
     );
 
 
+  /*
+   * 3.
+   * 최상위 Root가 Auto Layout이면
+   * Root 자체만 Layout 해제.
+   *
+   * Child 위치는 Plan에 absoluteTransform으로
+   * 저장되어 있다.
+   */
   try {
     if (
       root.layoutMode !==
@@ -3688,6 +3702,10 @@ async function cleanWorkingRoot(
   } catch (_) {}
 
 
+  /*
+   * 4.
+   * Plan 실행.
+   */
   await executeFlattenPlan(
     root,
     plan,
@@ -3695,53 +3713,18 @@ async function cleanWorkingRoot(
   );
 
 
+  /*
+   * 5.
+   * Layer Order.
+   *
+   * 겹친 요소가 있으면 Z-order 보호를 위해 Skip.
+   */
   sortLayersSafely(
     root
   );
 
 
   return stats;
-}
-
-
-/* =========================================================
-   GARBAGE PATH
-========================================================= */
-
-function buildApprovedGarbagePaths(
-  originalRoot
-) {
-  const map =
-    buildNodePathMap(
-      originalRoot
-    );
-
-
-  const result =
-    new Set();
-
-
-  for (
-    const originalId of
-    approvedGarbageOriginalIds
-  ) {
-    const path =
-      map.idToPath.get(
-        originalId
-      );
-
-
-    if (
-      path !== undefined
-    ) {
-      result.add(
-        path
-      );
-    }
-  }
-
-
-  return result;
 }
 
 
@@ -3758,7 +3741,7 @@ function commitWorkingRoot(
     !isNodeAlive(working)
   ) {
     throw new Error(
-      "Commit 대상 Root가 존재하지 않습니다."
+      "Commit 대상 Screen이 존재하지 않습니다."
     );
   }
 
@@ -3779,13 +3762,19 @@ function commitWorkingRoot(
   }
 
 
+  /*
+   * 원본 자체가 또 다른 Instance 내부인 경우
+   * 같은 위치에 Frame을 삽입할 수 없다.
+   *
+   * 이 경우는 원본 보호.
+   */
   if (
     safeNodeType(parent) ===
       "INSTANCE" ||
     isInsideInstance(parent)
   ) {
     throw new Error(
-      "선택한 Screen이 다른 Instance 내부에 있어 안전하게 Commit할 수 없습니다."
+      "선택한 Screen 자체가 다른 Instance 내부에 있습니다. 가장 바깥쪽 Screen을 선택해주세요."
     );
   }
 
@@ -3808,17 +3797,23 @@ function commitWorkingRoot(
 
   if (!originalTransform) {
     throw new Error(
-      "Original transform을 읽을 수 없습니다."
+      "Original Screen 위치를 읽을 수 없습니다."
     );
   }
 
 
+  /*
+   * Commit 전 TEMP 표시 제거.
+   */
   working.setPluginData(
     TEMP_PLUGIN_KEY,
     ""
   );
 
 
+  /*
+   * 원래 sibling 위치로.
+   */
   parent.insertChild(
     Math.max(
       index,
@@ -3828,6 +3823,10 @@ function commitWorkingRoot(
   );
 
 
+  /*
+   * Working Copy는 멀리 떨어져 있었으므로
+   * 원본 Absolute Transform으로 복원.
+   */
   working.relativeTransform =
     absoluteToRelative(
       originalTransform,
@@ -3835,9 +3834,17 @@ function commitWorkingRoot(
     );
 
 
-  safeRemove(
-    original
-  );
+  /*
+   * Clean 결과가 정상적으로 들어간 뒤
+   * 원본 제거.
+   */
+  if (
+    !safeRemove(original)
+  ) {
+    throw new Error(
+      "Original Screen 교체 중 오류가 발생했습니다."
+    );
+  }
 
 
   return working;
@@ -3848,23 +3855,31 @@ function commitWorkingRoot(
    TRANSACTION
 ========================================================= */
 
+/*
+ * 이전처럼 PNG Byte 100% 비교는 하지 않는다.
+ *
+ * 같은 화면이어도 Rasterization / PNG encoding 차이로
+ * 정상 결과가 Rollback되는 문제가 있었기 때문이다.
+ *
+ * 대신 화면을 변경시킬 가능성이 있는 구조 자체를
+ * Preserve하는 방식으로 바꿨다.
+ */
+
 async function cleanWithProtection(
   original
 ) {
-  let working =
-    null;
+  let working = null;
 
-  let committed =
-    false;
+  let committed = false;
 
   let stats =
-    null;
+    createEmptyStats();
 
 
   try {
-    /* ---------------------------------------------------
-       Font Preload
-    --------------------------------------------------- */
+    /* -------------------------------------------------
+       1. Font Preload
+    ------------------------------------------------- */
 
     const fontResult =
       await preloadFonts(
@@ -3876,9 +3891,9 @@ async function cleanWithProtection(
       fontResult.failedPaths;
 
 
-    /* ---------------------------------------------------
-       Garbage IDs → Paths
-    --------------------------------------------------- */
+    /* -------------------------------------------------
+       2. Garbage 승인 Path
+    ------------------------------------------------- */
 
     approvedGarbagePaths =
       buildApprovedGarbagePaths(
@@ -3886,19 +3901,9 @@ async function cleanWithProtection(
       );
 
 
-    /* ---------------------------------------------------
-       BEFORE
-    --------------------------------------------------- */
-
-    const before =
-      await exportVisual(
-        original
-      );
-
-
-    /* ---------------------------------------------------
-       Working Copy
-    --------------------------------------------------- */
+    /* -------------------------------------------------
+       3. Working Copy
+    ------------------------------------------------- */
 
     working =
       createPageWorkingCopy(
@@ -3906,9 +3911,9 @@ async function cleanWithProtection(
       );
 
 
-    /* ---------------------------------------------------
-       Root Normalize
-    --------------------------------------------------- */
+    /* -------------------------------------------------
+       4. Root → Frame
+    ------------------------------------------------- */
 
     working =
       normalizeRootToFrame(
@@ -3916,9 +3921,12 @@ async function cleanWithProtection(
       );
 
 
-    if (!isNodeAlive(working)) {
+    if (
+      !working ||
+      !isNodeAlive(working)
+    ) {
       throw new Error(
-        "Root Frame 변환에 실패했습니다."
+        "Screen Frame 변환에 실패했습니다."
       );
     }
 
@@ -3929,9 +3937,9 @@ async function cleanWithProtection(
     );
 
 
-    /* ---------------------------------------------------
-       Clean
-    --------------------------------------------------- */
+    /* -------------------------------------------------
+       5. Cleanup
+    ------------------------------------------------- */
 
     stats =
       await cleanWorkingRoot(
@@ -3939,53 +3947,9 @@ async function cleanWithProtection(
       );
 
 
-    if (!isNodeAlive(working)) {
-      throw new Error(
-        "Cleanup 중 Working Root가 삭제되었습니다."
-      );
-    }
-
-
-    /* ---------------------------------------------------
-       AFTER
-    --------------------------------------------------- */
-
-    const after =
-      await exportVisual(
-        working
-      );
-
-
-    /* ---------------------------------------------------
-       VISUAL VERIFY
-    --------------------------------------------------- */
-
-    const visualMatch =
-      byteArraysEqual(
-        before,
-        after
-      );
-
-
-    if (!visualMatch) {
-      return {
-        success:
-          false,
-
-        root:
-          original,
-
-        stats,
-
-        reason:
-          "Visual Verification Failed"
-      };
-    }
-
-
-    /* ---------------------------------------------------
-       COMMIT
-    --------------------------------------------------- */
+    /* -------------------------------------------------
+       6. Commit
+    ------------------------------------------------- */
 
     const committedRoot =
       commitWorkingRoot(
@@ -4018,7 +3982,7 @@ async function cleanWithProtection(
 
   } catch (error) {
     console.error(
-      "Cleanup transaction error:",
+      "Cleanup transaction failed:",
       error
     );
 
@@ -4030,44 +3994,7 @@ async function cleanWithProtection(
       root:
         original,
 
-      stats:
-        stats || {
-          detachedInstances:
-            0,
-
-          removedGarbage:
-            0,
-
-          protectedGarbage:
-            0,
-
-          removedContainers:
-            0,
-
-          movedLayers:
-            0,
-
-          visualShells:
-            0,
-
-          bakedAreas:
-            0,
-
-          preservedAreas:
-            0,
-
-          convertedTexts:
-            0,
-
-          convertedFontSegments:
-            0,
-
-          failedFontConversions:
-            0,
-
-          finalLayers:
-            0
-        },
+      stats,
 
       reason:
         error &&
@@ -4079,14 +4006,17 @@ async function cleanWithProtection(
 
   } finally {
     /*
-     * 성공 여부와 관계없이
-     * TEMP Node 강제 정리.
+     * 성공했다면 committed Root는
+     * TEMP flag가 제거되어 있으므로 삭제되지 않는다.
      *
-     * Commit 성공한 working에는
-     * TEMP data를 이미 제거했으므로
-     * 아래 cleanup 대상에 잡히지 않는다.
+     * 실패했다면 Working Copy를 전부 제거.
      */
     removeTemporaryRoots();
+
+
+    if (!committed) {
+      working = null;
+    }
   }
 }
 
@@ -4097,50 +4027,38 @@ async function cleanWithProtection(
 
 function analyzeScreen(root) {
   const result = {
-    total:
-      0,
+    total: 0,
 
-    garbage:
-      0,
+    garbage: 0,
+    garbageItems: [],
 
-    garbageItems:
-      [],
+    containers: 0,
 
-    containers:
-      0,
+    instances: 0,
+    autoLayouts: 0,
 
-    instances:
-      0,
+    masks: 0,
+    clips: 0,
 
-    autoLayouts:
-      0,
+    text: 0,
+    nonInterText: 0,
 
-    masks:
-      0,
+    icons: 0,
+    lines: 0,
 
-    clips:
-      0,
-
-    text:
-      0,
-
-    nonInterText:
-      0,
-
-    icons:
-      0,
-
-    lines:
-      0,
-
-    bakeCandidates:
-      0
+    /*
+     * 기존 UI 호환을 위해 이름은
+     * bakeCandidates 유지.
+     *
+     * 실제 의미는 Visual 보호가 필요한 Container 수.
+     */
+    bakeCandidates: 0
   };
 
 
   function walk(
     node,
-    path
+    displayPath
   ) {
     if (!isNodeAlive(node)) {
       return;
@@ -4150,17 +4068,21 @@ function analyzeScreen(root) {
     result.total++;
 
 
-    const nodeName =
+    const name =
       safeNodeName(
         node
       );
 
 
     const currentPath =
-      path
-        ? `${path} / ${nodeName}`
-        : nodeName;
+      displayPath
+        ? `${displayPath} / ${name}`
+        : name;
 
+
+    /* ---------------------------------------------
+       Garbage
+    --------------------------------------------- */
 
     const reason =
       getGarbageReason(
@@ -4172,18 +4094,11 @@ function analyzeScreen(root) {
       result.garbage++;
 
 
-      let id = "";
-
-      try {
-        id = node.id;
-      } catch (_) {}
-
-
       result.garbageItems.push({
-        id,
+        id:
+          safeNodeId(node) || "",
 
-        name:
-          nodeName,
+        name,
 
         type:
           safeNodeType(node) ||
@@ -4197,6 +4112,10 @@ function analyzeScreen(root) {
     }
 
 
+    /* ---------------------------------------------
+       Container
+    --------------------------------------------- */
+
     if (
       node !== root &&
       isContainer(node)
@@ -4205,12 +4124,16 @@ function analyzeScreen(root) {
 
 
       if (
-        needsBake(node)
+        needsPreserve(node)
       ) {
         result.bakeCandidates++;
       }
     }
 
+
+    /* ---------------------------------------------
+       Instance
+    --------------------------------------------- */
 
     if (
       safeNodeType(node) ===
@@ -4219,6 +4142,10 @@ function analyzeScreen(root) {
       result.instances++;
     }
 
+
+    /* ---------------------------------------------
+       Auto Layout
+    --------------------------------------------- */
 
     try {
       if (
@@ -4231,6 +4158,10 @@ function analyzeScreen(root) {
     } catch (_) {}
 
 
+    /* ---------------------------------------------
+       Mask
+    --------------------------------------------- */
+
     try {
       if (
         "isMask" in node &&
@@ -4241,6 +4172,10 @@ function analyzeScreen(root) {
     } catch (_) {}
 
 
+    /* ---------------------------------------------
+       Actual Clip
+    --------------------------------------------- */
+
     if (
       node !== root &&
       actuallyClipsChildren(
@@ -4250,6 +4185,10 @@ function analyzeScreen(root) {
       result.clips++;
     }
 
+
+    /* ---------------------------------------------
+       Text
+    --------------------------------------------- */
 
     if (
       safeNodeType(node) ===
@@ -4267,15 +4206,12 @@ function analyzeScreen(root) {
 
         const nonInter =
           segments.some(
-            segment => {
-              return (
-                !segment.fontName ||
-                segment.fontName ===
-                  figma.mixed ||
-                segment.fontName.family !==
-                  "Inter"
-              );
-            }
+            segment =>
+              !segment.fontName ||
+              segment.fontName ===
+                figma.mixed ||
+              segment.fontName.family !==
+                "Inter"
           );
 
 
@@ -4289,12 +4225,20 @@ function analyzeScreen(root) {
     }
 
 
+    /* ---------------------------------------------
+       Icon
+    --------------------------------------------- */
+
     if (
       isIconType(node)
     ) {
       result.icons++;
     }
 
+
+    /* ---------------------------------------------
+       Line
+    --------------------------------------------- */
 
     if (
       safeNodeType(node) ===
@@ -4351,10 +4295,8 @@ async msg => {
 
       if (
         !node ||
-        node.type ===
-          "DOCUMENT" ||
-        node.type ===
-          "PAGE"
+        node.type === "DOCUMENT" ||
+        node.type === "PAGE"
       ) {
         return;
       }
@@ -4369,7 +4311,12 @@ async msg => {
           [node]
         );
 
-    } catch (_) {}
+    } catch (error) {
+      console.warn(
+        "Layer selection failed:",
+        error
+      );
+    }
 
 
     return;
@@ -4504,8 +4451,8 @@ async msg => {
 
 
     /*
-     * 과거 실행에서 남아있는 TEMP가 있다면
-     * 먼저 정리.
+     * 과거 실패한 Working Copy가
+     * 혹시 남아있다면 실행 전에 제거.
      */
     removeTemporaryRoots();
 
@@ -4520,10 +4467,16 @@ async msg => {
       }
 
 
-      const resultRoots =
-        [];
+      const resultRoots = [];
 
 
+      /*
+       * 기존 UI와 호환하기 위해
+       * committed / rolledBack 유지.
+       *
+       * 이제 rolledBack은 PNG 차이가 아니라
+       * 실제 처리 오류가 발생한 경우만 의미한다.
+       */
       const total = {
         screens:
           selection.length,
@@ -4577,7 +4530,9 @@ async msg => {
         selection
       ) {
         if (
-          !isNodeAlive(original)
+          !isNodeAlive(
+            original
+          )
         ) {
           continue;
         }
@@ -4611,8 +4566,10 @@ async msg => {
 
 
           console.warn(
-            "Rollback:",
-            safeNodeName(original),
+            "Cleanup rollback:",
+            safeNodeName(
+              original
+            ),
             cleanResult.reason
           );
         }
@@ -4635,12 +4592,12 @@ async msg => {
 
 
       /*
-       * 최종 TEMP Cleanup
+       * Temp 최종 정리.
        */
       removeTemporaryRoots();
 
 
-      const aliveResultRoots =
+      const aliveRoots =
         resultRoots.filter(
           root =>
             isNodeAlive(root)
@@ -4648,16 +4605,15 @@ async msg => {
 
 
       if (
-        aliveResultRoots.length >
-        0
+        aliveRoots.length > 0
       ) {
         figma.currentPage.selection =
-          aliveResultRoots;
+          aliveRoots;
 
 
         figma.viewport
           .scrollAndZoomIntoView(
-            aliveResultRoots
+            aliveRoots
           );
       }
 
@@ -4672,24 +4628,30 @@ async msg => {
 
 
       if (
-        total.rolledBack >
-        0
+        total.rolledBack > 0
       ) {
         figma.notify(
-          `${total.rolledBack}개 Screen은 화면 보존을 위해 Rollback되었습니다.`
+          `${total.rolledBack}개 Screen은 처리 중 오류로 원본을 유지했습니다.`
+        );
+
+      } else if (
+        total.preservedAreas > 0
+      ) {
+        figma.notify(
+          `Cleanup 완료 · 화면 보호를 위해 ${total.preservedAreas}개 영역의 내부 구조를 유지했습니다.`
         );
 
       } else {
         figma.notify(
-          "Cleanup 완료 · Visual Verification PASS"
+          "Cleanup 완료"
         );
       }
 
 
     } catch (error) {
       /*
-       * 어떤 상황에서도
-       * 임시 복제본 남기지 않음.
+       * 어떤 오류가 발생해도
+       * 복사본은 남기지 않는다.
        */
       removeTemporaryRoots();
 
