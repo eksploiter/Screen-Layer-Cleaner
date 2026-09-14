@@ -7,9 +7,23 @@ figma.showUI(__html__, {
 
 /* =========================================================
    SCREEN LAYER CLEANER
-   Batch + Binary Isolation
+
+   Architecture
+   ---------------------------------------------------------
+   1. Work on clone
+   2. Structural phases are processed in batches
+   3. Re-scan tree after every structural phase
+   4. PNG verification once per batch
+   5. Binary isolation only when a batch fails
+   6. Font → Inter is an explicit visual change,
+      so it is NOT rolled back by PNG verification
+   7. Root Screen name is always preserved
 ========================================================= */
 
+
+/* =========================================================
+   OPTIONS / STATE
+========================================================= */
 
 let renameTextToHyphen = false;
 let convertFontToInter = false;
@@ -18,37 +32,35 @@ let renameContainers = false;
 let approvedGarbageIds = new Set();
 let analyzedRootIds = [];
 
-
 const WORK_OFFSET_X = 30000;
 const CHECKPOINT_OFFSET_X = 60000;
 
 const ROW_Y_TOLERANCE = 6;
 const GEOMETRY_TOLERANCE = 0.25;
 
-const MAX_INSTANCE_ROUNDS = 2;
+const MAX_INSTANCE_ROUNDS = 3;
 
 
 /* =========================================================
    PLUGIN DATA
+
+   Task type별 marker를 분리한다.
+
+   기존에는 모든 작업이 PD_TASK_ID 하나를 공유하면서
+   새로운 Plan을 만들 때 이전 marker가 덮어써질 수 있었다.
 ========================================================= */
 
-const PD_GARBAGE_ID =
-  "slc_garbage_id";
+const PD_GARBAGE_ID = "slc_garbage_id";
 
-const PD_TASK_ID =
-  "slc_task_id";
+const PD_GARBAGE_TASK = "slc_garbage_task";
+const PD_INSTANCE_TASK = "slc_instance_task";
+const PD_SCREENSHOT_TASK = "slc_screenshot_task";
+const PD_FLATTEN_TASK = "slc_flatten_task";
+const PD_INTER_TASK = "slc_inter_task";
 
-const PD_SKIP_DETACH =
-  "slc_skip_detach";
-
-const PD_SKIP_SCREENSHOT =
-  "slc_skip_screenshot";
-
-const PD_SKIP_FLATTEN =
-  "slc_skip_flatten";
-
-const PD_INTER_DONE =
-  "slc_inter_done";
+const PD_SKIP_DETACH = "slc_skip_detach";
+const PD_SKIP_SCREENSHOT = "slc_skip_screenshot";
+const PD_SKIP_FLATTEN = "slc_skip_flatten";
 
 
 /* =========================================================
@@ -56,9 +68,7 @@ const PD_INTER_DONE =
 ========================================================= */
 
 function createStats() {
-
   return {
-
     detachedInstances: 0,
     rejectedInstances: 0,
 
@@ -91,7 +101,6 @@ function createStats() {
     orderRejected: 0,
 
     preservedAreas: 0,
-
     visualShells: 0,
     bakedAreas: 0,
 
@@ -117,54 +126,32 @@ function addReport(
   node,
   reason
 ) {
-
   const entry = {
-
     action,
-
     status,
-
     node:
-      node &&
-      isAlive(node)
+      node && isAlive(node)
         ? safeName(node)
         : "",
-
     type:
-      node &&
-      isAlive(node)
+      node && isAlive(node)
         ? safeType(node)
         : "",
-
-    reason:
-      reason || ""
+    reason: reason || ""
   };
 
-
-  stats.report.push(
-    entry
-  );
-
+  stats.report.push(entry);
 
   const symbol =
-
     status === "SUCCESS"
-
       ? "✓"
-
       : status === "SKIPPED"
-
         ? "→"
-
         : "✕";
 
-
   console.log(
-
     `[Screen Layer Cleaner] ${symbol} ${action}`,
-
     entry.node,
-
     entry.reason
   );
 }
@@ -175,168 +162,108 @@ function addReport(
 ========================================================= */
 
 function safeType(node) {
-
   try {
-
-    return node
-      ? node.type
-      : null;
-
+    return node ? node.type : null;
   } catch (_) {
-
     return null;
   }
 }
 
 
 function safeName(node) {
-
   try {
-
-    return node
-      ? node.name
-      : "";
-
+    return node ? node.name : "";
   } catch (_) {
-
     return "";
   }
 }
 
 
 function safeId(node) {
-
   try {
-
-    return node
-      ? node.id
-      : null;
-
+    return node ? node.id : null;
   } catch (_) {
-
     return null;
   }
 }
 
 
 function safeParent(node) {
-
   try {
-
-    return node
-      ? node.parent
-      : null;
-
+    return node ? node.parent : null;
   } catch (_) {
-
     return null;
   }
 }
 
 
 function isAlive(node) {
-
   try {
-
-    return !!(
-      node &&
-      node.parent
-    );
-
+    return !!(node && node.parent);
   } catch (_) {
-
     return false;
   }
 }
 
 
 function childrenOf(node) {
-
   try {
+    if (!node || !isAlive(node)) {
+      return [];
+    }
 
-    return (
+    if ("children" in node) {
+      return [...node.children];
+    }
 
-      isAlive(node) &&
-
-      "children" in node
-
-        ? [...node.children]
-
-        : []
-    );
-
+    return [];
   } catch (_) {
-
     return [];
   }
 }
 
 
 function safeBounds(node) {
-
   try {
-
-    return (
-      node.absoluteBoundingBox ||
-      null
-    );
-
+    return node.absoluteBoundingBox || null;
   } catch (_) {
-
     return null;
   }
 }
 
 
 function safeRenderBounds(node) {
-
   try {
-
     return (
       node.absoluteRenderBounds ||
       node.absoluteBoundingBox ||
       null
     );
-
   } catch (_) {
-
     return null;
   }
 }
 
 
 function safeTransform(node) {
-
   try {
-
-    return node.absoluteTransform;
-
+    return node.absoluteTransform || null;
   } catch (_) {
-
     return null;
   }
 }
 
 
 function safeRemove(node) {
-
   try {
-
-    if (
-      !isAlive(node)
-    ) {
-
+    if (!isAlive(node)) {
       return false;
     }
 
-
     node.remove();
-
-
     return true;
 
   } catch (_) {
-
     return false;
   }
 }
@@ -347,14 +274,11 @@ function safeRemove(node) {
 ========================================================= */
 
 function isContainer(node) {
-
   return [
-
     "FRAME",
     "GROUP",
     "COMPONENT",
     "INSTANCE"
-
   ].includes(
     safeType(node)
   );
@@ -362,77 +286,48 @@ function isContainer(node) {
 
 
 function isSupportedRoot(node) {
-
   return isContainer(node);
 }
 
 
 function isAutoLayout(node) {
-
   try {
-
     return (
-
       isAlive(node) &&
-
       "layoutMode" in node &&
-
-      node.layoutMode !==
-        "NONE"
+      node.layoutMode !== "NONE"
     );
-
   } catch (_) {
-
     return false;
   }
 }
 
 
 function participatesInAutoLayout(node) {
+  const parent = safeParent(node);
 
-  const parent =
-    safeParent(node);
-
-
-  if (
-    !parent ||
-    !isAutoLayout(parent)
-  ) {
-
+  if (!parent || !isAutoLayout(parent)) {
     return false;
   }
 
-
   try {
-
     return !(
-
       "layoutPositioning" in node &&
-
-      node.layoutPositioning ===
-        "ABSOLUTE"
+      node.layoutPositioning === "ABSOLUTE"
     );
-
   } catch (_) {
-
     return true;
   }
 }
 
 
 /* =========================================================
-   TRANSFORM
+   MATRIX / TRANSFORM
 ========================================================= */
 
-function multiplyTransform(
-  a,
-  b
-) {
-
+function multiplyTransform(a, b) {
   return [
-
     [
-
       a[0][0] * b[0][0] +
       a[0][1] * b[1][0],
 
@@ -442,11 +337,9 @@ function multiplyTransform(
       a[0][0] * b[0][2] +
       a[0][1] * b[1][2] +
       a[0][2]
-
     ],
 
     [
-
       a[1][0] * b[0][0] +
       a[1][1] * b[1][0],
 
@@ -456,79 +349,43 @@ function multiplyTransform(
       a[1][0] * b[0][2] +
       a[1][1] * b[1][2] +
       a[1][2]
-
     ]
   ];
 }
 
 
 function invertTransform(m) {
+  const a = m[0][0];
+  const c = m[0][1];
+  const e = m[0][2];
 
-  const a =
-    m[0][0];
-
-  const c =
-    m[0][1];
-
-  const e =
-    m[0][2];
-
-  const b =
-    m[1][0];
-
-  const d =
-    m[1][1];
-
-  const f =
-    m[1][2];
-
+  const b = m[1][0];
+  const d = m[1][1];
+  const f = m[1][2];
 
   const det =
     a * d -
     b * c;
 
-
-  if (
-    Math.abs(det) <
-    0.000001
-  ) {
-
+  if (Math.abs(det) < 0.000001) {
     throw new Error(
       "Transform matrix cannot be inverted."
     );
   }
 
-
-  const inv =
-    1 / det;
-
+  const inv = 1 / det;
 
   return [
-
     [
-
       d * inv,
-
       -c * inv,
-
-      (
-        c * f -
-        d * e
-      ) * inv
-
+      (c * f - d * e) * inv
     ],
 
     [
-
       -b * inv,
-
       a * inv,
-
-      (
-        b * e -
-        a * f
-      ) * inv
-
+      (b * e - a * f) * inv
     ]
   ];
 }
@@ -538,27 +395,17 @@ function absoluteToRelative(
   absoluteTransform,
   parent
 ) {
-
   const parentTransform =
     safeTransform(parent);
 
-
-  if (
-    !parentTransform
-  ) {
-
+  if (!parentTransform) {
     throw new Error(
       "Parent transform unavailable."
     );
   }
 
-
   return multiplyTransform(
-
-    invertTransform(
-      parentTransform
-    ),
-
+    invertTransform(parentTransform),
     absoluteTransform
   );
 }
@@ -568,24 +415,17 @@ function absoluteToRelative(
    PLUGIN DATA
 ========================================================= */
 
-function getPD(
-  node,
-  key
-) {
-
+function getPD(node, key) {
   try {
+    if (!isAlive(node)) {
+      return "";
+    }
 
-    return isAlive(node)
-
-      ? (
-          node.getPluginData(key) ||
-          ""
-        )
-
-      : "";
-
+    return (
+      node.getPluginData(key) ||
+      ""
+    );
   } catch (_) {
-
     return "";
   }
 }
@@ -596,19 +436,13 @@ function setPD(
   key,
   value
 ) {
-
   try {
-
-    if (
-      isAlive(node)
-    ) {
-
+    if (isAlive(node)) {
       node.setPluginData(
         key,
         value
       );
     }
-
   } catch (_) {}
 }
 
@@ -618,88 +452,90 @@ function findByPluginData(
   key,
   value
 ) {
-
-  let found =
-    null;
-
+  let found = null;
 
   function walk(node) {
-
     if (
       found ||
       !isAlive(node)
     ) {
-
       return;
     }
-
 
     if (
-      getPD(
-        node,
-        key
-      ) === value
+      getPD(node, key) ===
+      value
     ) {
-
-      found =
-        node;
-
-
+      found = node;
       return;
     }
-
 
     for (
       const child of
       childrenOf(node)
     ) {
-
       walk(child);
 
-
       if (found) {
-
         return;
       }
     }
   }
 
-
   walk(root);
-
 
   return found;
 }
 
 
-function clearInternalPluginData(root) {
-
-  const keys = [
-
-    PD_GARBAGE_ID,
-    PD_TASK_ID,
-    PD_SKIP_DETACH,
-    PD_SKIP_SCREENSHOT,
-    PD_SKIP_FLATTEN,
-    PD_INTER_DONE
-
-  ];
-
-
+function clearPluginKey(
+  root,
+  key
+) {
   function walk(node) {
-
-    if (
-      !isAlive(node)
-    ) {
-
+    if (!isAlive(node)) {
       return;
     }
 
+    setPD(
+      node,
+      key,
+      ""
+    );
 
     for (
-      const key of keys
+      const child of
+      childrenOf(node)
     ) {
+      walk(child);
+    }
+  }
 
+  walk(root);
+}
+
+
+function clearInternalPluginData(root) {
+  const keys = [
+    PD_GARBAGE_ID,
+
+    PD_GARBAGE_TASK,
+    PD_INSTANCE_TASK,
+    PD_SCREENSHOT_TASK,
+    PD_FLATTEN_TASK,
+    PD_INTER_TASK,
+
+    PD_SKIP_DETACH,
+    PD_SKIP_SCREENSHOT,
+    PD_SKIP_FLATTEN
+  ];
+
+  function walk(node) {
+    if (!isAlive(node)) {
+      return;
+    }
+
+    for (const key of keys) {
       setPD(
         node,
         key,
@@ -707,16 +543,13 @@ function clearInternalPluginData(root) {
       );
     }
 
-
     for (
       const child of
       childrenOf(node)
     ) {
-
       walk(child);
     }
   }
-
 
   walk(root);
 }
@@ -726,14 +559,10 @@ function clearInternalPluginData(root) {
    TASK MARKER
 ========================================================= */
 
-let taskCounter =
-  0;
-
+let taskCounter = 0;
 
 function createTaskMarker(prefix) {
-
   taskCounter++;
-
 
   return (
     `${prefix}_${Date.now()}_${taskCounter}`
@@ -742,67 +571,46 @@ function createTaskMarker(prefix) {
 
 
 /* =========================================================
-   PATH MAP
+   ORIGINAL → WORK COPY PATH MAPPING
 ========================================================= */
 
 function createPathMap(root) {
-
-  const map =
-    new Map();
-
+  const map = new Map();
 
   function walk(
     node,
     path
   ) {
-
-    if (
-      !isAlive(node)
-    ) {
-
+    if (!isAlive(node)) {
       return;
     }
-
 
     const id =
       safeId(node);
 
-
     if (id) {
-
       map.set(
         id,
         [...path]
       );
     }
 
-
     const children =
       childrenOf(node);
-
 
     for (
       let i = 0;
       i < children.length;
       i++
     ) {
-
       walk(
         children[i],
-        [
-          ...path,
-          i
-        ]
+        [...path, i]
       );
     }
   }
 
-
-  walk(
-    root,
-    []
-  );
-
+  walk(root, []);
 
   return map;
 }
@@ -812,41 +620,28 @@ function resolvePath(
   root,
   path
 ) {
-
-  let current =
-    root;
-
+  let current = root;
 
   for (
     const index of path
   ) {
-
     const children =
       childrenOf(current);
 
-
     if (
       index < 0 ||
-      index >=
-        children.length
+      index >= children.length
     ) {
-
       return null;
     }
-
 
     current =
       children[index];
 
-
-    if (
-      !isAlive(current)
-    ) {
-
+    if (!isAlive(current)) {
       return null;
     }
   }
-
 
   return current;
 }
@@ -857,272 +652,221 @@ function resolvePath(
 ========================================================= */
 
 async function exportNodePng(node) {
-
-  if (
-    !isAlive(node)
-  ) {
-
+  if (!isAlive(node)) {
     return null;
   }
 
-
   try {
-
     return await node.exportAsync({
-
-      format:
-        "PNG",
+      format: "PNG",
 
       constraint: {
-
-        type:
-          "SCALE",
-
-        value:
-          1
+        type: "SCALE",
+        value: 1
       }
     });
 
   } catch (_) {
-
     return null;
   }
 }
 
 
-function sameBytes(
-  a,
-  b
-) {
-
+function sameBytes(a, b) {
   if (
     !a ||
     !b ||
-    a.length !==
-      b.length
+    a.length !== b.length
   ) {
-
     return false;
   }
-
 
   for (
     let i = 0;
     i < a.length;
     i++
   ) {
-
-    if (
-      a[i] !==
-      b[i]
-    ) {
-
+    if (a[i] !== b[i]) {
       return false;
     }
   }
-
 
   return true;
 }
 
 
 /* =========================================================
-   WORKING COPY
+   WORK COPY
 ========================================================= */
 
 async function createWorkingState(
   originalRoot
 ) {
-
   const clone =
     originalRoot.clone();
-
 
   figma.currentPage.appendChild(
     clone
   );
 
-
   clone.x =
     originalRoot.x +
     WORK_OFFSET_X;
 
-
   clone.y =
     originalRoot.y;
 
-
   return {
-
-    root:
-      clone
+    root: clone
   };
 }
 
 
 /* =========================================================
-   VISUAL BATCH TRANSACTION
+   PHASE TRANSACTION
+
+   한 Phase 안의 작업을 전부 한 번에 적용한다.
+
+   Before PNG 1회
+   ↓
+   Batch Mutation
+   ↓
+   After PNG 1회
+
+   실패한 Phase만 Binary Isolation.
 ========================================================= */
 
 async function runVisualBatchTransaction(
   state,
   tasks,
-  applyTask,
+  resolveNode,
+  mutateTask,
   stats
 ) {
-
   if (
     !state ||
     !isAlive(state.root) ||
+    !tasks ||
     tasks.length === 0
   ) {
-
     return {
-
-      accepted:
-        false,
-
-      attempted:
-        false,
-
-      reason:
-        "empty-batch",
-
-      results:
-        []
+      accepted: false,
+      attempted: false,
+      reason: "empty-batch",
+      results: []
     };
   }
 
-
   stats.visualBatchChecks++;
-
 
   const currentRoot =
     state.root;
 
-
   const rootX =
     currentRoot.x;
 
-
   const rootY =
     currentRoot.y;
-
 
   const before =
     await exportNodePng(
       currentRoot
     );
 
-
-  if (
-    !before
-  ) {
-
+  if (!before) {
     return {
-
-      accepted:
-        false,
-
-      attempted:
-        false,
-
-      reason:
-        "before-render-failed",
-
-      results:
-        []
+      accepted: false,
+      attempted: false,
+      reason: "before-render-failed",
+      results: []
     };
   }
 
 
+  /* -----------------------------------------------------
+     One checkpoint per batch
+  ----------------------------------------------------- */
+
   let checkpoint;
 
-
   try {
-
     checkpoint =
       currentRoot.clone();
-
 
     figma.currentPage.appendChild(
       checkpoint
     );
 
-
     checkpoint.x =
       rootX +
       CHECKPOINT_OFFSET_X;
-
 
     checkpoint.y =
       rootY;
 
   } catch (error) {
-
     return {
-
-      accepted:
-        false,
-
-      attempted:
-        false,
-
-      reason:
-        "checkpoint-create-failed",
-
-      results:
-        [],
-
+      accepted: false,
+      attempted: false,
+      reason: "checkpoint-create-failed",
+      results: [],
       error
     };
   }
 
 
-  const results =
-    [];
+  const results = [];
 
-
-  let changedAny =
-    false;
+  let changedAny = false;
 
 
   try {
-
     for (
       const task of tasks
     ) {
+      let node = null;
+
+      try {
+        node =
+          resolveNode(
+            state.root,
+            task
+          );
+      } catch (_) {}
+
+
+      if (!node) {
+        results.push({
+          task,
+          changed: false,
+          reason: "task-node-missing"
+        });
+
+        continue;
+      }
+
 
       let result;
 
-
       try {
-
         result =
-          await applyTask(
+          await mutateTask(
             state.root,
+            node,
             task
           );
 
       } catch (error) {
-
         result = {
-
-          changed:
-            false,
-
-          reason:
-            "operation-error",
-
+          changed: false,
+          reason: "operation-error",
           error
         };
       }
 
 
       results.push({
-
         task,
-
         ...result
       });
 
@@ -1130,11 +874,8 @@ async function runVisualBatchTransaction(
       if (
         result &&
         result.root &&
-        isAlive(
-          result.root
-        )
+        isAlive(result.root)
       ) {
-
         state.root =
           result.root;
       }
@@ -1144,9 +885,7 @@ async function runVisualBatchTransaction(
         result &&
         result.changed
       ) {
-
-        changedAny =
-          true;
+        changedAny = true;
       }
     }
 
@@ -1156,63 +895,37 @@ async function runVisualBatchTransaction(
       state.root &&
       isAlive(state.root)
     ) {
-
       safeRemove(
         state.root
       );
     }
 
-
     checkpoint.x =
       rootX;
-
 
     checkpoint.y =
       rootY;
 
-
     state.root =
       checkpoint;
 
-
     return {
-
-      accepted:
-        false,
-
-      attempted:
-        true,
-
-      reason:
-        "batch-operation-error",
-
+      accepted: false,
+      attempted: true,
+      reason: "batch-operation-error",
       results,
-
       error
     };
   }
 
 
-  if (
-    !changedAny
-  ) {
-
-    safeRemove(
-      checkpoint
-    );
-
+  if (!changedAny) {
+    safeRemove(checkpoint);
 
     return {
-
-      accepted:
-        false,
-
-      attempted:
-        false,
-
-      reason:
-        "no-change",
-
+      accepted: false,
+      attempted: false,
+      reason: "no-change",
       results
     };
   }
@@ -1224,44 +937,29 @@ async function runVisualBatchTransaction(
     );
 
 
-  if (
-    !after
-  ) {
-
+  if (!after) {
     if (
       state.root &&
       isAlive(state.root)
     ) {
-
       safeRemove(
         state.root
       );
     }
 
-
     checkpoint.x =
       rootX;
-
 
     checkpoint.y =
       rootY;
 
-
     state.root =
       checkpoint;
 
-
     return {
-
-      accepted:
-        false,
-
-      attempted:
-        true,
-
-      reason:
-        "after-render-failed",
-
+      accepted: false,
+      attempted: true,
+      reason: "after-render-failed",
       results
     };
   }
@@ -1273,200 +971,177 @@ async function runVisualBatchTransaction(
       after
     )
   ) {
-
-    safeRemove(
-      checkpoint
-    );
-
+    safeRemove(checkpoint);
 
     return {
-
-      accepted:
-        true,
-
-      attempted:
-        true,
-
-      reason:
-        "visual-identical",
-
+      accepted: true,
+      attempted: true,
+      reason: "visual-identical",
       results
     };
   }
 
 
+  /* -----------------------------------------------------
+     Rollback whole batch
+  ----------------------------------------------------- */
+
   if (
     state.root &&
     isAlive(state.root)
   ) {
-
     safeRemove(
       state.root
     );
   }
 
-
   checkpoint.x =
     rootX;
-
 
   checkpoint.y =
     rootY;
 
-
   state.root =
     checkpoint;
 
-
   return {
-
-    accepted:
-      false,
-
-    attempted:
-      true,
-
-    reason:
-      "visual-changed",
-
+    accepted: false,
+    attempted: true,
+    reason: "visual-changed",
     results
   };
 }
 
 
 /* =========================================================
-   BINARY ISOLATION
+   PHASE + BINARY FALLBACK
 ========================================================= */
 
 async function processBatchWithIsolation({
-
   state,
   tasks,
-  applyTask,
+  resolveNode,
+  mutateTask,
   stats,
   onAccepted,
   onRejected,
   onSkipped
-
 }) {
-
   if (
     !tasks ||
     tasks.length === 0
   ) {
-
     return;
   }
 
 
+  /*
+   * 먼저 전체 Phase를 한 번에 시도.
+   */
+
   const tx =
     await runVisualBatchTransaction(
-
       state,
       tasks,
-      applyTask,
+      resolveNode,
+      mutateTask,
       stats
-
     );
 
 
-  if (
-    tx.accepted
-  ) {
+  if (tx.accepted) {
+    const resultMap =
+      new Map();
 
-    const map =
-      new Map(
-
-        tx.results.map(
-          item => [
-            item.task.marker,
-            item
-          ]
-        )
+    for (
+      const item of
+      tx.results
+    ) {
+      resultMap.set(
+        item.task.marker,
+        item
       );
+    }
 
 
     for (
       const task of tasks
     ) {
-
       const result =
-        map.get(
+        resultMap.get(
           task.marker
         );
-
 
       if (
         result &&
         result.changed
       ) {
-
-        await onAccepted(
-          task,
-          result
-        );
+        if (onAccepted) {
+          await onAccepted(
+            task,
+            result
+          );
+        }
 
       } else {
+        if (onSkipped) {
+          await onSkipped(
+            task,
+            result || {
+              reason: "no-change"
+            }
+          );
+        }
+      }
+    }
 
+    return;
+  }
+
+
+  /*
+   * Mutation 자체가 없었던 경우.
+   */
+
+  if (!tx.attempted) {
+    if (onSkipped) {
+      for (
+        const task of tasks
+      ) {
         await onSkipped(
-
           task,
-
-          result || {
-
-            reason:
-              "no-change"
+          {
+            reason: tx.reason
           }
         );
       }
     }
 
-
     return;
   }
 
 
-  if (
-    !tx.attempted
-  ) {
+  /*
+   * 단일 Task까지 분리했는데도 실패.
+   */
 
-    for (
-      const task of tasks
-    ) {
-
-      await onSkipped(
-
-        task,
-
-        {
-
-          reason:
-            tx.reason
-        }
+  if (tasks.length === 1) {
+    if (onRejected) {
+      await onRejected(
+        tasks[0],
+        tx
       );
     }
 
-
     return;
   }
 
 
-  if (
-    tasks.length === 1
-  ) {
-
-    await onRejected(
-      tasks[0],
-      tx
-    );
-
-
-    return;
-  }
-
+  /*
+   * Phase 실패한 경우에만 Binary Isolation.
+   */
 
   stats.binarySplits++;
-
 
   const middle =
     Math.ceil(
@@ -1476,7 +1151,6 @@ async function processBatchWithIsolation({
 
 
   await processBatchWithIsolation({
-
     state,
 
     tasks:
@@ -1485,10 +1159,9 @@ async function processBatchWithIsolation({
         middle
       ),
 
-    applyTask,
-
+    resolveNode,
+    mutateTask,
     stats,
-
     onAccepted,
     onRejected,
     onSkipped
@@ -1496,7 +1169,6 @@ async function processBatchWithIsolation({
 
 
   await processBatchWithIsolation({
-
     state,
 
     tasks:
@@ -1504,10 +1176,9 @@ async function processBatchWithIsolation({
         middle
       ),
 
-    applyTask,
-
+    resolveNode,
+    mutateTask,
     stats,
-
     onAccepted,
     onRejected,
     onSkipped
@@ -1515,25 +1186,27 @@ async function processBatchWithIsolation({
 }
 
 
+/* =========================================================
+   SINGLE VERIFIED OPERATION
+========================================================= */
+
 async function runSingleVisualTransaction(
   state,
   mutate,
   stats
 ) {
+  const task = {
+    marker:
+      createTaskMarker(
+        "single"
+      )
+  };
 
   return await runVisualBatchTransaction(
-
     state,
+    [task],
 
-    [
-      {
-
-        marker:
-          createTaskMarker(
-            "single"
-          )
-      }
-    ],
+    () => state.root,
 
     async root =>
       await mutate(root),
@@ -1548,59 +1221,34 @@ async function runSingleVisualTransaction(
 ========================================================= */
 
 function isLidName(name) {
-
   const value =
-    String(
-      name ||
-      ""
-    )
+    String(name || "")
       .trim()
       .toLowerCase();
 
-
   return (
-
-    value.startsWith(
-      "cci_ctn_"
-    ) ||
-
-    value.startsWith(
-      "cci_msg_"
-    ) ||
-
-    value.startsWith(
-      "ctn_"
-    ) ||
-
-    value.startsWith(
-      "msg_"
-    )
+    value.startsWith("cci_ctn_") ||
+    value.startsWith("cci_msg_") ||
+    value.startsWith("ctn_") ||
+    value.startsWith("msg_")
   );
 }
 
 
 /* =========================================================
-   VISUAL PROPERTIES
+   PAINT
 ========================================================= */
 
 function hasVisiblePaint(paints) {
-
   return (
-
     Array.isArray(paints) &&
-
     paints.some(
       paint =>
-
-        paint.visible !==
-          false &&
-
+        paint.visible !== false &&
         !(
           typeof paint.opacity ===
             "number" &&
-
-          paint.opacity ===
-            0
+          paint.opacity === 0
         )
     )
   );
@@ -1608,81 +1256,55 @@ function hasVisiblePaint(paints) {
 
 
 function hasVisibleFill(node) {
-
   try {
-
     return (
-
       "fills" in node &&
-
-      node.fills !==
-        figma.mixed &&
-
+      node.fills !== figma.mixed &&
       hasVisiblePaint(
         node.fills
       )
     );
-
   } catch (_) {
-
     return false;
   }
 }
 
 
 function hasVisibleStroke(node) {
-
   try {
-
     return (
-
       "strokes" in node &&
-
-      node.strokes !==
-        figma.mixed &&
-
+      node.strokes !== figma.mixed &&
       hasVisiblePaint(
         node.strokes
       )
     );
-
   } catch (_) {
-
     return false;
   }
 }
 
 
 function hasVisibleEffects(node) {
-
   try {
-
     return (
-
       "effects" in node &&
-
       Array.isArray(
         node.effects
       ) &&
-
       node.effects.some(
         effect =>
-          effect.visible !==
-          false
+          effect.visible !== false
       )
     );
-
   } catch (_) {
-
     return false;
   }
 }
 
 
 function hasOwnVisual(node) {
-
   return (
-
     hasVisibleFill(node) ||
     hasVisibleStroke(node) ||
     hasVisibleEffects(node)
@@ -1691,33 +1313,20 @@ function hasOwnVisual(node) {
 
 
 function hasImageFill(node) {
-
   try {
-
     return (
-
       "fills" in node &&
-
-      node.fills !==
-        figma.mixed &&
-
+      node.fills !== figma.mixed &&
       Array.isArray(
         node.fills
       ) &&
-
       node.fills.some(
         fill =>
-
-          fill.type ===
-            "IMAGE" &&
-
-          fill.visible !==
-            false
+          fill.type === "IMAGE" &&
+          fill.visible !== false
       )
     );
-
   } catch (_) {
-
     return false;
   }
 }
@@ -1728,66 +1337,45 @@ function hasImageFill(node) {
 ========================================================= */
 
 function isMaskNode(node) {
-
   try {
-
     return (
-
       "isMask" in node &&
-
-      node.isMask ===
-        true
+      node.isMask === true
     );
-
   } catch (_) {
-
     return false;
   }
 }
 
 
 function containsMask(node) {
-
   for (
     const child of
     childrenOf(node)
   ) {
-
     if (
-
       isMaskNode(child) ||
-
       containsMask(child)
     ) {
-
       return true;
     }
   }
-
 
   return false;
 }
 
 
 function actuallyClipsChildren(node) {
-
   try {
-
     if (
-
       !(
         "clipsContent" in node
       ) ||
-
-      node.clipsContent !==
-        true
+      node.clipsContent !== true
     ) {
-
       return false;
     }
-
   } catch (_) {
-
     return false;
   }
 
@@ -1795,11 +1383,7 @@ function actuallyClipsChildren(node) {
   const box =
     safeBounds(node);
 
-
-  if (
-    !box
-  ) {
-
+  if (!box) {
     return true;
   }
 
@@ -1807,7 +1391,6 @@ function actuallyClipsChildren(node) {
   const right =
     box.x +
     box.width;
-
 
   const bottom =
     box.y +
@@ -1818,37 +1401,25 @@ function actuallyClipsChildren(node) {
     const child of
     childrenOf(node)
   ) {
-
     try {
-
       if (
-
         "visible" in child &&
-
-        child.visible ===
-          false
+        child.visible === false
       ) {
-
         continue;
       }
-
     } catch (_) {}
 
 
     const childBox =
       safeRenderBounds(child);
 
-
-    if (
-      !childBox
-    ) {
-
+    if (!childBox) {
       continue;
     }
 
 
     if (
-
       childBox.x <
         box.x - 0.5 ||
 
@@ -1863,11 +1434,9 @@ function actuallyClipsChildren(node) {
         childBox.height >
         bottom + 0.5
     ) {
-
       return true;
     }
   }
-
 
   return false;
 }
@@ -1878,9 +1447,7 @@ function actuallyClipsChildren(node) {
 ========================================================= */
 
 function isShapeNode(node) {
-
   return [
-
     "RECTANGLE",
     "ELLIPSE",
     "POLYGON",
@@ -1888,7 +1455,6 @@ function isShapeNode(node) {
     "VECTOR",
     "BOOLEAN_OPERATION",
     "LINE"
-
   ].includes(
     safeType(node)
   );
@@ -1896,55 +1462,34 @@ function isShapeNode(node) {
 
 
 function isTinyNode(node) {
-
   try {
-
     return (
-
-      node.width <=
-        0.1 ||
-
-      node.height <=
-        0.1
+      node.width <= 0.1 ||
+      node.height <= 0.1
     );
-
   } catch (_) {
-
     return false;
   }
 }
 
 
 function isEmptyVisualShape(node) {
-
   return (
-
     isShapeNode(node) &&
-
     !isMaskNode(node) &&
-
     !hasVisibleFill(node) &&
-
     !hasVisibleStroke(node) &&
-
     !hasVisibleEffects(node)
   );
 }
 
 
 function isEmptyContainer(node) {
-
   return (
-
     isContainer(node) &&
-
-    childrenOf(node).length ===
-      0 &&
-
+    childrenOf(node).length === 0 &&
     !hasVisibleFill(node) &&
-
     !hasVisibleStroke(node) &&
-
     !hasVisibleEffects(node)
   );
 }
@@ -1954,16 +1499,11 @@ function isOutsideRoot(
   node,
   root
 ) {
-
   if (
-
     !isAlive(node) ||
-
     !isAlive(root) ||
-
     node === root
   ) {
-
     return false;
   }
 
@@ -1971,24 +1511,16 @@ function isOutsideRoot(
   const nodeBox =
     safeRenderBounds(node);
 
-
   const rootBox =
     safeBounds(root);
 
 
-  if (
-
-    !nodeBox ||
-
-    !rootBox
-  ) {
-
+  if (!nodeBox || !rootBox) {
     return false;
   }
 
 
   return (
-
     nodeBox.x +
       nodeBox.width <=
       rootBox.x ||
@@ -2012,106 +1544,64 @@ function getGarbageReason(
   node,
   root
 ) {
-
   if (
-
     !isAlive(node) ||
-
     node === root
   ) {
-
     return null;
   }
 
 
   try {
-
     if (
-
       "visible" in node &&
-
-      node.visible ===
-        false
+      node.visible === false
     ) {
-
-      return (
-        "Hidden · visible=false"
-      );
+      return "Hidden · visible=false";
     }
-
   } catch (_) {}
 
 
   try {
-
     if (
-
       "opacity" in node &&
-
-      node.opacity ===
-        0
+      node.opacity === 0
     ) {
-
-      return (
-        "Transparent · opacity=0"
-      );
+      return "Transparent · opacity=0";
     }
-
   } catch (_) {}
 
 
   if (
-    safeType(node) ===
-      "SLICE"
+    safeType(node) === "SLICE"
   ) {
-
     return "Slice";
   }
 
 
-  if (
-    isTinyNode(node)
-  ) {
+  if (isTinyNode(node)) {
+    return "Zero / Tiny Size";
+  }
 
-    return (
-      "Zero / Tiny Size"
-    );
+
+  if (isEmptyVisualShape(node)) {
+    return "Empty Shape";
+  }
+
+
+  if (isEmptyContainer(node)) {
+    return "Empty Container";
   }
 
 
   if (
-    isEmptyVisualShape(node)
-  ) {
-
-    return (
-      "Empty Shape"
-    );
-  }
-
-
-  if (
-    isEmptyContainer(node)
-  ) {
-
-    return (
-      "Empty Container"
-    );
-  }
-
-
-  if (
-
     isOutsideRoot(
       node,
       root
     ) &&
-
     !isMaskNode(node)
   ) {
-
-    return (
-      "Outside Screen"
-    );
+    return "Outside Screen";
   }
 
 
@@ -2123,47 +1613,30 @@ function isFastSafeGarbage(
   node,
   root
 ) {
-
   if (
-
     !isAlive(node) ||
-
     node === root ||
-
     isMaskNode(node) ||
-
-    participatesInAutoLayout(
-      node
-    )
+    participatesInAutoLayout(node)
   ) {
-
     return false;
   }
 
 
   try {
-
     if (
-
       "visible" in node &&
-
-      node.visible ===
-        false
+      node.visible === false
     ) {
-
       return true;
     }
-
   } catch (_) {}
 
 
   if (
-
     isEmptyVisualShape(node) ||
-
     isEmptyContainer(node)
   ) {
-
     return true;
   }
 
@@ -2174,20 +1647,13 @@ function isFastSafeGarbage(
       root
     )
   ) {
-
     try {
-
       if (
-
         "clipsContent" in root &&
-
-        root.clipsContent ===
-          true
+        root.clipsContent === true
       ) {
-
         return true;
       }
-
     } catch (_) {}
   }
 
@@ -2197,20 +1663,13 @@ function isFastSafeGarbage(
 
 
 function collectGarbageItems(root) {
-
-  const result =
-    [];
-
+  const result = [];
 
   function walk(
     node,
     path
   ) {
-
-    if (
-      !isAlive(node)
-    ) {
-
+    if (!isAlive(node)) {
       return;
     }
 
@@ -2220,11 +1679,8 @@ function collectGarbageItems(root) {
 
 
     const currentPath =
-
       path
-
         ? `${path} / ${name}`
-
         : name;
 
 
@@ -2236,9 +1692,7 @@ function collectGarbageItems(root) {
 
 
     if (reason) {
-
       result.push({
-
         id:
           safeId(node) ||
           "",
@@ -2261,7 +1715,6 @@ function collectGarbageItems(root) {
       const child of
       childrenOf(node)
     ) {
-
       walk(
         child,
         currentPath
@@ -2269,44 +1722,38 @@ function collectGarbageItems(root) {
     }
   }
 
-
   walk(
     root,
     ""
   );
 
-
   return result;
 }
 
+
+/* =========================================================
+   MARK SELECTED GARBAGE
+========================================================= */
 
 function markSelectedGarbage(
   originalRoot,
   workRoot
 ) {
-
-  const map =
+  const pathMap =
     createPathMap(
       originalRoot
     );
-
 
   for (
     const id of
     approvedGarbageIds
   ) {
-
     const path =
-      map.get(id);
+      pathMap.get(id);
 
-
-    if (
-      !path
-    ) {
-
+    if (!path) {
       continue;
     }
-
 
     const node =
       resolvePath(
@@ -2314,9 +1761,7 @@ function markSelectedGarbage(
         path
       );
 
-
     if (node) {
-
       setPD(
         node,
         PD_GARBAGE_ID,
@@ -2327,27 +1772,31 @@ function markSelectedGarbage(
 }
 
 
-function buildGarbageTasks(root) {
+/* =========================================================
+   BUILD GARBAGE PLAN
+========================================================= */
 
-  const result =
-    [];
+function buildGarbagePlan(
+  root,
+  stats
+) {
+  stats.treeScans++;
+
+  clearPluginKey(
+    root,
+    PD_GARBAGE_TASK
+  );
+
+  const tasks = [];
 
 
   function countMarked(node) {
-
-    let count =
-      0;
-
+    let count = 0;
 
     function walk(current) {
-
-      if (
-        !isAlive(current)
-      ) {
-
+      if (!isAlive(current)) {
         return;
       }
-
 
       if (
         getPD(
@@ -2355,23 +1804,18 @@ function buildGarbageTasks(root) {
           PD_GARBAGE_ID
         )
       ) {
-
         count++;
       }
-
 
       for (
         const child of
         childrenOf(current)
       ) {
-
         walk(child);
       }
     }
 
-
     walk(node);
-
 
     return Math.max(
       count,
@@ -2384,22 +1828,16 @@ function buildGarbageTasks(root) {
     node,
     selectedAncestor
   ) {
-
-    if (
-      !isAlive(node)
-    ) {
-
+    if (!isAlive(node)) {
       return;
     }
 
 
     const selected =
-
       !!getPD(
         node,
         PD_GARBAGE_ID
       ) &&
-
       !!getGarbageReason(
         node,
         root
@@ -2407,27 +1845,21 @@ function buildGarbageTasks(root) {
 
 
     if (
-
       selected &&
-
       !selectedAncestor
     ) {
-
       const marker =
         createTaskMarker(
           "garbage"
         );
 
-
       setPD(
         node,
-        PD_TASK_ID,
+        PD_GARBAGE_TASK,
         marker
       );
 
-
-      result.push({
-
+      tasks.push({
         marker,
 
         name:
@@ -2458,7 +1890,6 @@ function buildGarbageTasks(root) {
       const child of
       childrenOf(node)
     ) {
-
       walk(
         child,
         selectedAncestor ||
@@ -2473,158 +1904,125 @@ function buildGarbageTasks(root) {
     false
   );
 
-
-  return result;
+  return tasks;
 }
 
+
+/* =========================================================
+   PROCESS GARBAGE
+========================================================= */
 
 async function processGarbage(
   state,
   stats
 ) {
-
-  const tasks =
-    buildGarbageTasks(
-      state.root
+  let tasks =
+    buildGarbagePlan(
+      state.root,
+      stats
     );
 
 
-  const fastTasks =
+  /*
+   * Fast-safe garbage는 PNG 없이 일괄 삭제.
+   */
+
+  const fast =
     tasks.filter(
       task =>
         task.fast
     );
 
 
-  const riskyTasks =
+  for (
+    const task of fast
+  ) {
+    const node =
+      findByPluginData(
+        state.root,
+        PD_GARBAGE_TASK,
+        task.marker
+      );
+
+    if (
+      node &&
+      safeRemove(node)
+    ) {
+      stats.removedGarbage +=
+        task.count;
+
+      stats.fastGarbage +=
+        task.count;
+
+      addReport(
+        stats,
+        "Garbage Delete",
+        "SUCCESS",
+        null,
+        `${task.type} "${task.name}" · Fast`
+      );
+    }
+  }
+
+
+  /*
+   * Tree가 바뀌었으므로 즉시 Garbage Plan 재생성.
+   */
+
+  tasks =
+    buildGarbagePlan(
+      state.root,
+      stats
+    );
+
+
+  const risky =
     tasks.filter(
       task =>
         !task.fast
     );
 
 
-  for (
-    const task of
-    fastTasks
-  ) {
-
-    const node =
-      findByPluginData(
-
-        state.root,
-
-        PD_TASK_ID,
-
-        task.marker
-      );
-
-
-    if (
-
-      node &&
-
-      safeRemove(node)
-    ) {
-
-      stats.removedGarbage +=
-        task.count;
-
-
-      stats.fastGarbage +=
-        task.count;
-
-
-      addReport(
-
-        stats,
-
-        "Garbage Delete",
-
-        "SUCCESS",
-
-        null,
-
-        `${task.type} "${task.name}" · ${task.reason} · Fast`
-      );
-    }
-  }
-
-
   await processBatchWithIsolation({
-
     state,
+    tasks: risky,
 
-    tasks:
-      riskyTasks,
+    resolveNode:
+      (root, task) =>
+        findByPluginData(
+          root,
+          PD_GARBAGE_TASK,
+          task.marker
+        ),
+
+    mutateTask:
+      async (
+        root,
+        node
+      ) => ({
+        root,
+
+        changed:
+          safeRemove(node),
+
+        reason:
+          "deleted"
+      }),
 
     stats,
 
 
-    applyTask:
-      async (
-        root,
-        task
-      ) => {
-
-        const node =
-          findByPluginData(
-
-            root,
-
-            PD_TASK_ID,
-
-            task.marker
-          );
-
-
-        if (
-          !node
-        ) {
-
-          return {
-
-            root,
-
-            changed:
-              false,
-
-            reason:
-              "garbage-missing"
-          };
-        }
-
-
-        return {
-
-          root,
-
-          changed:
-            safeRemove(node),
-
-          reason:
-            "deleted"
-        };
-      },
-
-
     onAccepted:
       async task => {
-
         stats.removedGarbage +=
           task.count;
 
-
         addReport(
-
           stats,
-
           "Garbage Delete",
-
           "SUCCESS",
-
           null,
-
-          `${task.type} "${task.name}" · ${task.reason} · Batch Verified`
+          `${task.type} "${task.name}" · Batch Verified`
         );
       },
 
@@ -2634,24 +2032,17 @@ async function processGarbage(
         task,
         tx
       ) => {
-
         stats.protectedGarbage +=
           task.count;
 
-
         const restored =
           findByPluginData(
-
             state.root,
-
-            PD_TASK_ID,
-
+            PD_GARBAGE_TASK,
             task.marker
           );
 
-
         if (restored) {
-
           setPD(
             restored,
             PD_GARBAGE_ID,
@@ -2659,22 +2050,14 @@ async function processGarbage(
           );
         }
 
-
         addReport(
-
           stats,
-
           "Garbage Delete",
-
           "REJECTED",
-
           restored,
-
           tx.reason ===
             "visual-changed"
-
-            ? `삭제 시 Render 변경 · ${task.reason}`
-
+            ? "삭제 시 Render 변경"
             : tx.reason
         );
       },
@@ -2694,16 +2077,13 @@ const loadedFonts =
   new Set();
 
 
-async function loadFontOnce(fontName) {
-
+async function loadFontOnce(
+  fontName
+) {
   if (
-
     !fontName ||
-
-    fontName ===
-      figma.mixed
+    fontName === figma.mixed
   ) {
-
     return false;
   }
 
@@ -2715,15 +2095,12 @@ async function loadFontOnce(fontName) {
   if (
     loadedFonts.has(key)
   ) {
-
     return true;
   }
 
 
   try {
-
     await figma.loadFontAsync({
-
       family:
         fontName.family,
 
@@ -2731,85 +2108,60 @@ async function loadFontOnce(fontName) {
         fontName.style
     });
 
-
-    loadedFonts.add(
-      key
-    );
-
+    loadedFonts.add(key);
 
     return true;
 
   } catch (_) {
-
     return false;
   }
 }
 
 
 async function ensureTextFontsLoaded(node) {
-
   if (
-    safeType(node) !==
-      "TEXT"
+    safeType(node) !== "TEXT"
   ) {
-
     return true;
   }
 
 
   try {
-
     const segments =
       node.getStyledTextSegments(
         ["fontName"]
       );
 
-
     for (
       const segment of segments
     ) {
-
       if (
-
         segment.fontName &&
-
-        segment.fontName !==
-          figma.mixed &&
-
-        !await loadFontOnce(
-          segment.fontName
-        )
+        segment.fontName !== figma.mixed
       ) {
-
-        return false;
+        await loadFontOnce(
+          segment.fontName
+        );
       }
     }
-
 
     return true;
 
   } catch (_) {
-
     return false;
   }
 }
 
 
 async function ensureSubtreeFontsLoaded(node) {
-
-  if (
-    !isAlive(node)
-  ) {
-
+  if (!isAlive(node)) {
     return false;
   }
 
 
   if (
-    safeType(node) ===
-      "TEXT"
+    safeType(node) === "TEXT"
   ) {
-
     return await ensureTextFontsLoaded(
       node
     );
@@ -2820,230 +2172,74 @@ async function ensureSubtreeFontsLoaded(node) {
     const child of
     childrenOf(node)
   ) {
-
-    if (
-      !await ensureSubtreeFontsLoaded(
-        child
-      )
-    ) {
-
-      return false;
-    }
+    await ensureSubtreeFontsLoaded(
+      child
+    );
   }
-
 
   return true;
 }
 
 
 /* =========================================================
-   FLATTEN CANDIDATES
+   INSTANCE PLAN
+
+   매 Phase마다 새로 생성.
 ========================================================= */
 
-function isFlattenCandidate(node) {
-
-  const type =
-    safeType(node);
-
-
-  return (
-
-    isAlive(node) &&
-
-    [
-      "FRAME",
-      "GROUP",
-      "COMPONENT"
-    ].includes(type) &&
-
-    !containsMask(node) &&
-
-    !actuallyClipsChildren(
-      node
-    ) &&
-
-    getPD(
-      node,
-      PD_SKIP_FLATTEN
-    ) !== "1"
-  );
-}
-
-
-function isFastFlattenCandidate(node) {
-
-  const type =
-    safeType(node);
-
-
-  if (
-
-    !isAlive(node) ||
-
-    ![
-      "FRAME",
-      "GROUP"
-    ].includes(type)
-  ) {
-
-    return false;
-  }
-
-
-  if (
-
-    isAutoLayout(node) ||
-
-    participatesInAutoLayout(
-      node
-    ) ||
-
-    containsMask(node) ||
-
-    actuallyClipsChildren(
-      node
-    ) ||
-
-    hasOwnVisual(node)
-  ) {
-
-    return false;
-  }
-
-
-  try {
-
-    if (
-
-      "opacity" in node &&
-
-      node.opacity !==
-        1
-    ) {
-
-      return false;
-    }
-
-  } catch (_) {}
-
-
-  try {
-
-    if (
-
-      "rotation" in node &&
-
-      Math.abs(
-        node.rotation
-      ) >
-        0.001
-    ) {
-
-      return false;
-    }
-
-  } catch (_) {}
-
-
-  try {
-
-    if (
-
-      "blendMode" in node &&
-
-      node.blendMode !==
-        "PASS_THROUGH" &&
-
-      node.blendMode !==
-        "NORMAL"
-    ) {
-
-      return false;
-    }
-
-  } catch (_) {}
-
-
-  return true;
-}
-
-
-/* =========================================================
-   EXECUTION PLAN
-========================================================= */
-
-function buildExecutionPlan(
+function buildInstancePlan(
   root,
   stats
 ) {
-
   stats.treeScans++;
 
+  clearPluginKey(
+    root,
+    PD_INSTANCE_TASK
+  );
 
-  const plan = {
-
-    instances: [],
-    screenshots: [],
-    fastFlatten: [],
-    riskyFlatten: [],
-    texts: []
-  };
+  const tasks = [];
 
 
   function walk(
     node,
     depth
   ) {
-
-    if (
-      !isAlive(node)
-    ) {
-
+    if (!isAlive(node)) {
       return;
     }
 
 
-    const type =
-      safeType(node);
-
-
     if (
-
-      type ===
-        "INSTANCE" &&
-
       node !== root &&
-
+      safeType(node) === "INSTANCE" &&
       getPD(
         node,
         PD_SKIP_DETACH
       ) !== "1"
     ) {
-
       const marker =
         createTaskMarker(
           "instance"
         );
 
-
       setPD(
         node,
-        PD_TASK_ID,
+        PD_INSTANCE_TASK,
         marker
       );
 
-
-      plan.instances.push({
-
+      tasks.push({
         marker,
-
         depth,
-
         name:
           safeName(node)
       });
 
-
+      /*
+       * 아직 Instance 내부는 스캔하지 않는다.
+       * Detach 후 새 Tree에서 다시 스캔.
+       */
       return;
     }
 
@@ -3052,117 +2248,10 @@ function buildExecutionPlan(
       const child of
       childrenOf(node)
     ) {
-
       walk(
         child,
         depth + 1
       );
-    }
-
-
-    if (
-      node === root
-    ) {
-
-      return;
-    }
-
-
-    if (
-
-      isContainer(node) &&
-
-      type !==
-        "INSTANCE" &&
-
-      getPD(
-        node,
-        PD_SKIP_SCREENSHOT
-      ) !== "1" &&
-
-      (
-        containsMask(node) ||
-
-        actuallyClipsChildren(
-          node
-        )
-      )
-    ) {
-
-      const marker =
-        createTaskMarker(
-          "screenshot"
-        );
-
-
-      setPD(
-        node,
-        PD_TASK_ID,
-        marker
-      );
-
-
-      plan.screenshots.push({
-
-        marker,
-
-        depth,
-
-        name:
-          safeName(node)
-      });
-
-
-      return;
-    }
-
-
-    if (
-      isFlattenCandidate(node)
-    ) {
-
-      const marker =
-        createTaskMarker(
-          "flatten"
-        );
-
-
-      setPD(
-        node,
-        PD_TASK_ID,
-        marker
-      );
-
-
-      const task = {
-
-        marker,
-
-        depth,
-
-        name:
-          safeName(node),
-
-        type
-      };
-
-
-      if (
-        isFastFlattenCandidate(
-          node
-        )
-      ) {
-
-        plan.fastFlatten.push(
-          task
-        );
-
-      } else {
-
-        plan.riskyFlatten.push(
-          task
-        );
-      }
     }
   }
 
@@ -3173,225 +2262,294 @@ function buildExecutionPlan(
   );
 
 
-  const deepFirst =
-    (
-      a,
-      b
-    ) =>
+  tasks.sort(
+    (a, b) =>
       b.depth -
-      a.depth;
-
-
-  plan.instances.sort(
-    deepFirst
+      a.depth
   );
 
-
-  plan.screenshots.sort(
-    deepFirst
-  );
-
-
-  plan.fastFlatten.sort(
-    deepFirst
-  );
-
-
-  plan.riskyFlatten.sort(
-    deepFirst
-  );
-
-
-  return plan;
+  return tasks;
 }
 
 
 /* =========================================================
-   INSTANCE
+   INSTANCE PHASE
 ========================================================= */
 
-async function processInstanceTasks(
+async function processInstancePhase(
   state,
-  tasks,
   stats
 ) {
+  for (
+    let round = 0;
+    round < MAX_INSTANCE_ROUNDS;
+    round++
+  ) {
+    const tasks =
+      buildInstancePlan(
+        state.root,
+        stats
+      );
 
-  await processBatchWithIsolation({
-
-    state,
-
-    tasks,
-
-    stats,
+    if (
+      tasks.length === 0
+    ) {
+      break;
+    }
 
 
-    applyTask:
-      async (
-        root,
-        task
-      ) => {
+    await processBatchWithIsolation({
+      state,
+      tasks,
 
-        const node =
+      resolveNode:
+        (root, task) =>
           findByPluginData(
-
             root,
-
-            PD_TASK_ID,
-
+            PD_INSTANCE_TASK,
             task.marker
-          );
+          ),
 
-
-        if (
-
-          !node ||
-
-          safeType(node) !==
+      mutateTask:
+        async (
+          root,
+          node
+        ) => {
+          if (
+            safeType(node) !==
             "INSTANCE"
-        ) {
+          ) {
+            return {
+              root,
+              changed: false,
+              reason:
+                "not-instance"
+            };
+          }
+
+
+          let detached;
+
+          try {
+            detached =
+              node.detachInstance();
+          } catch (_) {
+            return {
+              root,
+              changed: false,
+              reason:
+                "detach-error"
+            };
+          }
+
 
           return {
-
             root,
-
             changed:
-              false,
-
+              !!detached,
             reason:
-              "instance-missing"
+              detached
+                ? "detached"
+                : "detach-failed"
           };
-        }
+        },
+
+      stats,
 
 
-        const detached =
-          node.detachInstance();
+      onAccepted:
+        async task => {
+          stats.detachedInstances++;
 
-
-        return {
-
-          root,
-
-          changed:
-            !!detached,
-
-          reason:
-            detached
-              ? "detached"
-              : "detach-failed"
-        };
-      },
-
-
-    onAccepted:
-      async task => {
-
-        stats.detachedInstances++;
-
-
-        addReport(
-
-          stats,
-
-          "Instance Detach",
-
-          "SUCCESS",
-
-          null,
-
-          `"${task.name}" · Batch Verified`
-        );
-      },
-
-
-    onRejected:
-      async (
-        task,
-        tx
-      ) => {
-
-        stats.rejectedInstances++;
-
-        stats.preservedAreas++;
-
-
-        const restored =
-          findByPluginData(
-
-            state.root,
-
-            PD_TASK_ID,
-
-            task.marker
+          addReport(
+            stats,
+            "Instance Detach",
+            "SUCCESS",
+            null,
+            `"${task.name}" · Batch`
           );
+        },
 
 
-        if (restored) {
+      onRejected:
+        async (
+          task,
+          tx
+        ) => {
+          stats.rejectedInstances++;
+          stats.preservedAreas++;
 
-          setPD(
-            restored,
-            PD_SKIP_DETACH,
-            "1"
+          const node =
+            findByPluginData(
+              state.root,
+              PD_INSTANCE_TASK,
+              task.marker
+            );
+
+          if (node) {
+            setPD(
+              node,
+              PD_SKIP_DETACH,
+              "1"
+            );
+          }
+
+          addReport(
+            stats,
+            "Instance Detach",
+            "REJECTED",
+            node,
+            tx.reason ===
+              "visual-changed"
+              ? "Detach 시 Render 변경"
+              : tx.reason
           );
-        }
+        },
 
 
-        addReport(
-
-          stats,
-
-          "Instance Detach",
-
-          "REJECTED",
-
-          restored,
-
-          tx.reason ===
-            "visual-changed"
-
-            ? "Detach 시 Render 변경"
-
-            : tx.reason
-        );
-      },
+      onSkipped:
+        async () => {}
+    });
 
 
-    onSkipped:
-      async () => {}
-  });
+    /*
+     * 중요:
+     * 기존 Instance Plan 폐기.
+     *
+     * 다음 round는 현재 Tree를 다시 Scan한다.
+     */
+  }
 }
 
 
 /* =========================================================
-   SCREENSHOT
+   SCREENSHOT PLAN
+========================================================= */
+
+function buildScreenshotPlan(
+  root,
+  stats
+) {
+  stats.treeScans++;
+
+  clearPluginKey(
+    root,
+    PD_SCREENSHOT_TASK
+  );
+
+  const tasks = [];
+
+
+  function walk(
+    node,
+    depth
+  ) {
+    if (!isAlive(node)) {
+      return;
+    }
+
+
+    /*
+     * Children 먼저 읽는다.
+     */
+
+    for (
+      const child of
+      childrenOf(node)
+    ) {
+      walk(
+        child,
+        depth + 1
+      );
+    }
+
+
+    if (node === root) {
+      return;
+    }
+
+
+    if (
+      !isContainer(node)
+    ) {
+      return;
+    }
+
+
+    if (
+      getPD(
+        node,
+        PD_SKIP_SCREENSHOT
+      ) === "1"
+    ) {
+      return;
+    }
+
+
+    if (
+      !containsMask(node) &&
+      !actuallyClipsChildren(node)
+    ) {
+      return;
+    }
+
+
+    const marker =
+      createTaskMarker(
+        "screenshot"
+      );
+
+    setPD(
+      node,
+      PD_SCREENSHOT_TASK,
+      marker
+    );
+
+    tasks.push({
+      marker,
+      depth,
+      name:
+        safeName(node)
+    });
+  }
+
+
+  walk(
+    root,
+    0
+  );
+
+
+  tasks.sort(
+    (a, b) =>
+      b.depth -
+      a.depth
+  );
+
+  return tasks;
+}
+
+
+/* =========================================================
+   SCREENSHOT REPLACEMENT
 ========================================================= */
 
 async function replaceWithScreenshot(
   root,
   container
 ) {
-
   const parent =
     safeParent(container);
 
 
   if (
-
     !parent ||
-
-    !(
-      "children" in parent
-    )
+    !("children" in parent)
   ) {
-
     return {
-
       root,
-
-      changed:
-        false,
-
-      reason:
-        "invalid-parent"
+      changed: false,
+      reason: "invalid-parent"
     };
   }
 
@@ -3403,21 +2561,13 @@ async function replaceWithScreenshot(
 
 
   if (
-
     !bounds ||
-
     bounds.width <= 0 ||
-
     bounds.height <= 0
   ) {
-
     return {
-
       root,
-
-      changed:
-        false,
-
+      changed: false,
       reason:
         "invalid-render-bounds"
     };
@@ -3430,38 +2580,35 @@ async function replaceWithScreenshot(
     );
 
 
-  if (
-    index < 0
-  ) {
-
+  if (index < 0) {
     return {
-
       root,
-
-      changed:
-        false,
-
-      reason:
-        "index-invalid"
+      changed: false,
+      reason: "index-invalid"
     };
   }
 
 
-  const bytes =
-    await container.exportAsync({
+  let bytes;
 
-      format:
-        "PNG",
+  try {
+    bytes =
+      await container.exportAsync({
+        format: "PNG",
 
-      constraint: {
-
-        type:
-          "SCALE",
-
-        value:
-          1
-      }
-    });
+        constraint: {
+          type: "SCALE",
+          value: 1
+        }
+      });
+  } catch (_) {
+    return {
+      root,
+      changed: false,
+      reason:
+        "container-export-failed"
+    };
+  }
 
 
   const image =
@@ -3473,18 +2620,15 @@ async function replaceWithScreenshot(
   const rectangle =
     figma.createRectangle();
 
-
   rectangle.name =
     "screenshot";
 
 
   rectangle.resize(
-
     Math.max(
       bounds.width,
       0.01
     ),
-
     Math.max(
       bounds.height,
       0.01
@@ -3493,31 +2637,21 @@ async function replaceWithScreenshot(
 
 
   rectangle.fills = [
-
     {
-
-      type:
-        "IMAGE",
-
-      scaleMode:
-        "FILL",
-
-      imageHash:
-        image.hash
+      type: "IMAGE",
+      scaleMode: "FILL",
+      imageHash: image.hash
     }
   ];
 
 
   try {
-
     if (
       isAutoLayout(parent)
     ) {
-
       rectangle.layoutPositioning =
         "ABSOLUTE";
     }
-
   } catch (_) {}
 
 
@@ -3529,118 +2663,76 @@ async function replaceWithScreenshot(
 
   rectangle.relativeTransform =
     absoluteToRelative(
-
       [
-
-        [
-          1,
-          0,
-          bounds.x
-        ],
-
-        [
-          0,
-          1,
-          bounds.y
-        ]
+        [1, 0, bounds.x],
+        [0, 1, bounds.y]
       ],
-
       parent
     );
 
 
-  safeRemove(
-    container
-  );
+  safeRemove(container);
 
 
   return {
-
     root,
-
-    changed:
-      true,
-
+    changed: true,
     reason:
       "screenshot-created"
   };
 }
 
 
-async function processScreenshotTasks(
+/* =========================================================
+   SCREENSHOT PHASE
+========================================================= */
+
+async function processScreenshotPhase(
   state,
-  tasks,
   stats
 ) {
+  const tasks =
+    buildScreenshotPlan(
+      state.root,
+      stats
+    );
+
 
   await processBatchWithIsolation({
-
     state,
-
     tasks,
+
+    resolveNode:
+      (root, task) =>
+        findByPluginData(
+          root,
+          PD_SCREENSHOT_TASK,
+          task.marker
+        ),
+
+    mutateTask:
+      async (
+        root,
+        node
+      ) =>
+        await replaceWithScreenshot(
+          root,
+          node
+        ),
 
     stats,
 
 
-    applyTask:
-      async (
-        root,
-        task
-      ) => {
-
-        const node =
-          findByPluginData(
-
-            root,
-
-            PD_TASK_ID,
-
-            task.marker
-          );
-
-
-        if (
-          !node
-        ) {
-
-          return {
-
-            root,
-
-            changed:
-              false,
-
-            reason:
-              "container-missing"
-          };
-        }
-
-
-        return await replaceWithScreenshot(
-          root,
-          node
-        );
-      },
-
-
     onAccepted:
       async task => {
-
         stats.screenshotBaked++;
-
         stats.bakedAreas++;
 
-
         addReport(
-
           stats,
-
           "Mask / Clip",
-
           "SUCCESS",
-
           null,
-
           `"${task.name}" → screenshot`
         );
       },
@@ -3651,48 +2743,32 @@ async function processScreenshotTasks(
         task,
         tx
       ) => {
-
         stats.screenshotRejected++;
-
         stats.preservedAreas++;
 
-
-        const restored =
+        const node =
           findByPluginData(
-
             state.root,
-
-            PD_TASK_ID,
-
+            PD_SCREENSHOT_TASK,
             task.marker
           );
 
-
-        if (restored) {
-
+        if (node) {
           setPD(
-            restored,
+            node,
             PD_SKIP_SCREENSHOT,
             "1"
           );
         }
 
-
         addReport(
-
           stats,
-
           "Mask / Clip",
-
           "REJECTED",
-
-          restored,
-
+          node,
           tx.reason ===
             "visual-changed"
-
             ? "Screenshot 변환 시 Render 변경"
-
             : tx.reason
         );
       },
@@ -3705,88 +2781,254 @@ async function processScreenshotTasks(
 
 
 /* =========================================================
+   FLATTEN
+========================================================= */
+
+function isFlattenCandidate(node) {
+  const type =
+    safeType(node);
+
+  return (
+    isAlive(node) &&
+
+    [
+      "FRAME",
+      "GROUP",
+      "COMPONENT"
+    ].includes(type) &&
+
+    !containsMask(node) &&
+    !actuallyClipsChildren(node) &&
+
+    getPD(
+      node,
+      PD_SKIP_FLATTEN
+    ) !== "1"
+  );
+}
+
+
+function isFastFlattenCandidate(node) {
+  const type =
+    safeType(node);
+
+
+  if (
+    !isAlive(node) ||
+    ![
+      "FRAME",
+      "GROUP"
+    ].includes(type)
+  ) {
+    return false;
+  }
+
+
+  if (
+    isAutoLayout(node) ||
+    participatesInAutoLayout(node) ||
+    containsMask(node) ||
+    actuallyClipsChildren(node) ||
+    hasOwnVisual(node)
+  ) {
+    return false;
+  }
+
+
+  try {
+    if (
+      "opacity" in node &&
+      node.opacity !== 1
+    ) {
+      return false;
+    }
+  } catch (_) {}
+
+
+  try {
+    if (
+      "rotation" in node &&
+      Math.abs(
+        node.rotation
+      ) > 0.001
+    ) {
+      return false;
+    }
+  } catch (_) {}
+
+
+  try {
+    if (
+      "blendMode" in node &&
+      node.blendMode !==
+        "PASS_THROUGH" &&
+      node.blendMode !==
+        "NORMAL"
+    ) {
+      return false;
+    }
+  } catch (_) {}
+
+
+  return true;
+}
+
+
+/* =========================================================
+   FLATTEN PLAN
+========================================================= */
+
+function buildFlattenPlan(
+  root,
+  stats
+) {
+  stats.treeScans++;
+
+  clearPluginKey(
+    root,
+    PD_FLATTEN_TASK
+  );
+
+  const fast = [];
+  const risky = [];
+
+
+  function walk(
+    node,
+    depth
+  ) {
+    if (!isAlive(node)) {
+      return;
+    }
+
+
+    for (
+      const child of
+      childrenOf(node)
+    ) {
+      walk(
+        child,
+        depth + 1
+      );
+    }
+
+
+    if (
+      node === root ||
+      !isFlattenCandidate(node)
+    ) {
+      return;
+    }
+
+
+    const marker =
+      createTaskMarker(
+        "flatten"
+      );
+
+
+    setPD(
+      node,
+      PD_FLATTEN_TASK,
+      marker
+    );
+
+
+    const task = {
+      marker,
+      depth,
+      name:
+        safeName(node),
+      type:
+        safeType(node)
+    };
+
+
+    if (
+      isFastFlattenCandidate(node)
+    ) {
+      fast.push(task);
+    } else {
+      risky.push(task);
+    }
+  }
+
+
+  walk(
+    root,
+    0
+  );
+
+
+  const deepFirst =
+    (a, b) =>
+      b.depth -
+      a.depth;
+
+
+  fast.sort(deepFirst);
+  risky.sort(deepFirst);
+
+
+  return {
+    fast,
+    risky
+  };
+}
+
+
+/* =========================================================
    GEOMETRY
 ========================================================= */
 
 function captureDirectChildGeometry(node) {
-
-  const result =
-    [];
-
+  const result = [];
 
   for (
     const child of
     childrenOf(node)
   ) {
-
     const box =
       safeBounds(child);
 
-
-    if (
-      !box
-    ) {
-
+    if (!box) {
       continue;
     }
 
-
     result.push({
-
-      node:
-        child,
-
-      x:
-        box.x,
-
-      y:
-        box.y,
-
-      width:
-        box.width,
-
-      height:
-        box.height
+      node: child,
+      x: box.x,
+      y: box.y,
+      width: box.width,
+      height: box.height
     });
   }
-
 
   return result;
 }
 
 
 function geometryMatches(snapshot) {
-
   for (
     const before of snapshot
   ) {
-
     if (
-      !isAlive(
-        before.node
-      )
+      !isAlive(before.node)
     ) {
-
       return false;
     }
-
 
     const after =
       safeBounds(
         before.node
       );
 
-
-    if (
-      !after
-    ) {
-
+    if (!after) {
       return false;
     }
 
 
     if (
-
       Math.abs(
         before.x -
         after.x
@@ -3811,11 +3053,9 @@ function geometryMatches(snapshot) {
       ) >
         GEOMETRY_TOLERANCE
     ) {
-
       return false;
     }
   }
-
 
   return true;
 }
@@ -3823,6 +3063,12 @@ function geometryMatches(snapshot) {
 
 /* =========================================================
    FAST FLATTEN
+
+   Fast Flatten 실패 시 해당 Container만 local clone 복원.
+
+   중요한 점:
+   이 Phase가 끝난 뒤 Flatten Plan을 폐기하고 다시 만든다.
+   따라서 clone으로 Node ID가 바뀌어도 다음 Plan에는 영향 없음.
 ========================================================= */
 
 async function fastFlattenOne(
@@ -3830,27 +3076,20 @@ async function fastFlattenOne(
   task,
   stats
 ) {
-
   const container =
     findByPluginData(
-
       state.root,
-
-      PD_TASK_ID,
-
+      PD_FLATTEN_TASK,
       task.marker
     );
 
 
   if (
-
     !container ||
-
     !isFastFlattenCandidate(
       container
     )
   ) {
-
     return false;
   }
 
@@ -3860,14 +3099,9 @@ async function fastFlattenOne(
 
 
   if (
-
     !parent ||
-
-    !(
-      "children" in parent
-    )
+    !("children" in parent)
   ) {
-
     return false;
   }
 
@@ -3878,10 +3112,7 @@ async function fastFlattenOne(
     );
 
 
-  if (
-    index < 0
-  ) {
-
+  if (index < 0) {
     return false;
   }
 
@@ -3891,42 +3122,25 @@ async function fastFlattenOne(
 
 
   if (
-    children.length ===
-      0
+    children.length === 0
   ) {
-
     if (
       safeRemove(container)
     ) {
-
       stats.fastFlatten++;
-
       stats.flattenedContainers++;
-
       stats.removedContainers++;
-
 
       return true;
     }
-
 
     return false;
   }
 
 
-  for (
-    const child of children
-  ) {
-
-    if (
-      !await ensureSubtreeFontsLoaded(
-        child
-      )
-    ) {
-
-      return false;
-    }
-  }
+  await ensureSubtreeFontsLoaded(
+    container
+  );
 
 
   const geometry =
@@ -3938,7 +3152,6 @@ async function fastFlattenOne(
   const snapshots =
     children.map(
       child => ({
-
         child,
 
         transform:
@@ -3953,7 +3166,6 @@ async function fastFlattenOne(
         !item.transform
     )
   ) {
-
     return false;
   }
 
@@ -3971,16 +3183,18 @@ async function fastFlattenOne(
   );
 
 
-  backup.x +=
-    CHECKPOINT_OFFSET_X;
+  backup.x =
+    container.absoluteBoundingBox
+      ? container.absoluteBoundingBox.x +
+        CHECKPOINT_OFFSET_X
+      : backup.x +
+        CHECKPOINT_OFFSET_X;
 
 
-  const moved =
-    [];
+  const moved = [];
 
 
   try {
-
     let insertion =
       index;
 
@@ -3988,7 +3202,6 @@ async function fastFlattenOne(
     for (
       const item of snapshots
     ) {
-
       parent.insertChild(
         insertion,
         item.child
@@ -3997,9 +3210,7 @@ async function fastFlattenOne(
 
       item.child.relativeTransform =
         absoluteToRelative(
-
           item.transform,
-
           parent
         );
 
@@ -4008,14 +3219,11 @@ async function fastFlattenOne(
         item.child
       );
 
-
       insertion++;
     }
 
 
-    safeRemove(
-      container
-    );
+    safeRemove(container);
 
 
     if (
@@ -4023,24 +3231,18 @@ async function fastFlattenOne(
         geometry
       )
     ) {
-
       throw new Error(
         "geometry-changed"
       );
     }
 
 
-    safeRemove(
-      backup
-    );
+    safeRemove(backup);
 
 
     stats.fastFlatten++;
-
     stats.flattenedContainers++;
-
     stats.removedContainers++;
-
     stats.movedLayers +=
       moved.length;
 
@@ -4049,34 +3251,28 @@ async function fastFlattenOne(
 
   } catch (_) {
 
+    /*
+     * 실패한 container만 local rollback.
+     */
+
     for (
       const child of moved
     ) {
-
-      if (
-        isAlive(child)
-      ) {
-
+      if (isAlive(child)) {
         safeRemove(child);
       }
     }
 
 
-    if (
-      isAlive(backup)
-    ) {
-
+    if (isAlive(backup)) {
       parent.insertChild(
         index,
         backup
       );
 
-
       try {
-
         backup.relativeTransform =
           originalRelativeTransform;
-
       } catch (_) {}
     }
 
@@ -4095,14 +3291,10 @@ function createVisualShell(
   parent,
   index
 ) {
-
   if (
-
     !isAlive(source) ||
-
     !isAlive(parent)
   ) {
-
     return null;
   }
 
@@ -4110,11 +3302,7 @@ function createVisualShell(
   const transform =
     safeTransform(source);
 
-
-  if (
-    !transform
-  ) {
-
+  if (!transform) {
     return null;
   }
 
@@ -4122,103 +3310,110 @@ function createVisualShell(
   const rectangle =
     figma.createRectangle();
 
-
   rectangle.name =
     "shape";
 
 
   try {
-
     rectangle.resize(
-
       Math.max(
         source.width,
         0.01
       ),
-
       Math.max(
         source.height,
         0.01
       )
     );
-
   } catch (_) {
-
-    safeRemove(
-      rectangle
-    );
-
+    try {
+      rectangle.remove();
+    } catch (_) {}
 
     return null;
   }
 
 
   try {
-
     if (
       source.fills !==
-        figma.mixed
+      figma.mixed
     ) {
-
       rectangle.fills =
         source.fills;
     }
-
   } catch (_) {}
 
 
   try {
-
     if (
       source.strokes !==
-        figma.mixed
+      figma.mixed
     ) {
-
       rectangle.strokes =
         source.strokes;
     }
-
   } catch (_) {}
 
 
   try {
-
     rectangle.strokeWeight =
       source.strokeWeight;
 
-
     rectangle.strokeAlign =
       source.strokeAlign;
-
   } catch (_) {}
 
 
   try {
+    if (
+      "dashPattern" in source
+    ) {
+      rectangle.dashPattern =
+        source.dashPattern;
+    }
+  } catch (_) {}
 
+
+  try {
+    if (
+      "strokeCap" in source
+    ) {
+      rectangle.strokeCap =
+        source.strokeCap;
+    }
+  } catch (_) {}
+
+
+  try {
+    if (
+      "strokeJoin" in source
+    ) {
+      rectangle.strokeJoin =
+        source.strokeJoin;
+    }
+  } catch (_) {}
+
+
+  try {
     rectangle.effects =
       source.effects;
-
   } catch (_) {}
 
 
   try {
-
     rectangle.opacity =
       source.opacity;
-
   } catch (_) {}
 
 
   try {
-
     rectangle.blendMode =
       source.blendMode;
-
   } catch (_) {}
 
 
   try {
-
     rectangle.topLeftRadius =
       source.topLeftRadius;
 
@@ -4230,25 +3425,20 @@ function createVisualShell(
 
     rectangle.bottomRightRadius =
       source.bottomRightRadius;
-
   } catch (_) {}
 
 
   try {
-
     if (
       isAutoLayout(parent)
     ) {
-
       rectangle.layoutPositioning =
         "ABSOLUTE";
     }
-
   } catch (_) {}
 
 
   try {
-
     parent.insertChild(
       index,
       rectangle
@@ -4257,9 +3447,7 @@ function createVisualShell(
 
     rectangle.relativeTransform =
       absoluteToRelative(
-
         transform,
-
         parent
       );
 
@@ -4267,11 +3455,9 @@ function createVisualShell(
     return rectangle;
 
   } catch (_) {
-
-    safeRemove(
-      rectangle
-    );
-
+    try {
+      rectangle.remove();
+    } catch (_) {}
 
     return null;
   }
@@ -4286,29 +3472,18 @@ async function flattenContainerOneLevel(
   root,
   container
 ) {
-
   const parent =
     safeParent(container);
 
 
   if (
-
     !parent ||
-
-    !(
-      "children" in parent
-    )
+    !("children" in parent)
   ) {
-
     return {
-
       root,
-
-      changed:
-        false,
-
-      reason:
-        "invalid-parent"
+      changed: false,
+      reason: "invalid-parent"
     };
   }
 
@@ -4319,19 +3494,11 @@ async function flattenContainerOneLevel(
     );
 
 
-  if (
-    index < 0
-  ) {
-
+  if (index < 0) {
     return {
-
       root,
-
-      changed:
-        false,
-
-      reason:
-        "index-invalid"
+      changed: false,
+      reason: "index-invalid"
     };
   }
 
@@ -4343,9 +3510,7 @@ async function flattenContainerOneLevel(
   if (
     children.length === 0
   ) {
-
     return {
-
       root,
 
       changed:
@@ -4356,46 +3521,21 @@ async function flattenContainerOneLevel(
       reason:
         "empty-container",
 
-      moved:
-        0,
-
-      removed:
-        1,
-
-      shells:
-        0
+      moved: 0,
+      removed: 1,
+      shells: 0
     };
   }
 
 
-  for (
-    const child of children
-  ) {
-
-    if (
-      !await ensureSubtreeFontsLoaded(
-        child
-      )
-    ) {
-
-      return {
-
-        root,
-
-        changed:
-          false,
-
-        reason:
-          "font-unavailable"
-      };
-    }
-  }
+  await ensureSubtreeFontsLoaded(
+    container
+  );
 
 
   const snapshots =
     children.map(
       child => ({
-
         child,
 
         transform:
@@ -4410,14 +3550,9 @@ async function flattenContainerOneLevel(
         !item.transform
     )
   ) {
-
     return {
-
       root,
-
-      changed:
-        false,
-
+      changed: false,
       reason:
         "transform-unavailable"
     };
@@ -4427,59 +3562,41 @@ async function flattenContainerOneLevel(
   let insertion =
     index;
 
-
-  let shells =
-    0;
+  let shells = 0;
 
 
   if (
-    hasOwnVisual(
-      container
-    )
+    hasOwnVisual(container)
   ) {
-
     const shell =
       createVisualShell(
-
         container,
-
         parent,
-
         insertion
       );
 
-
     if (shell) {
-
       insertion++;
-
       shells++;
     }
   }
 
 
-  let moved =
-    0;
+  let moved = 0;
 
 
   for (
     const item of snapshots
   ) {
-
     try {
-
       if (
-
         isAutoLayout(parent) &&
-
         "layoutPositioning" in
           item.child
       ) {
-
         item.child.layoutPositioning =
           "ABSOLUTE";
       }
-
     } catch (_) {}
 
 
@@ -4491,167 +3608,133 @@ async function flattenContainerOneLevel(
 
     item.child.relativeTransform =
       absoluteToRelative(
-
         item.transform,
-
         parent
       );
 
 
-    moved++;
-
     insertion++;
+    moved++;
   }
 
 
-  safeRemove(
-    container
-  );
+  safeRemove(container);
 
 
   return {
-
     root,
-
-    changed:
-      true,
-
-    reason:
-      "flattened",
-
+    changed: true,
+    reason: "flattened",
     moved,
-
-    removed:
-      1,
-
+    removed: 1,
     shells
   };
 }
 
 
 /* =========================================================
-   FLATTEN PLAN
+   FLATTEN PHASE
+
+   1. Fast candidates
+   2. Tree changed → throw away Plan
+   3. Re-scan
+   4. Risky candidates batch verify
 ========================================================= */
 
-async function processFlattenPlan(
+async function processFlattenPhase(
   state,
-  plan,
   stats
 ) {
+  let plan =
+    buildFlattenPlan(
+      state.root,
+      stats
+    );
 
-  const failedFast =
-    [];
 
+  /*
+   * FAST
+   */
 
   for (
     const task of
-    plan.fastFlatten
+    plan.fast
   ) {
-
     const success =
       await fastFlattenOne(
-
         state,
-
         task,
-
         stats
       );
 
-
     if (success) {
-
       addReport(
-
         stats,
-
         "Container Flatten",
-
         "SUCCESS",
-
         null,
-
         `${task.type} "${task.name}" · Fast Geometry`
-      );
-
-    } else {
-
-      failedFast.push(
-        task
       );
     }
   }
 
 
-  const risky = [
+  /*
+   * Fast Flatten이 Tree를 변경했으므로
+   * 이전 Plan을 완전히 폐기한다.
+   */
 
-    ...failedFast,
+  plan =
+    buildFlattenPlan(
+      state.root,
+      stats
+    );
 
-    ...plan.riskyFlatten
+
+  /*
+   * 새 Plan의 Risky + Fast 잔여분.
+   *
+   * Fast 실패 후보도 새 Plan에서 다시 계산되므로
+   * stale marker를 사용하지 않는다.
+   */
+
+  const riskyTasks = [
+    ...plan.fast,
+    ...plan.risky
   ];
 
 
-  risky.sort(
-    (
-      a,
-      b
-    ) =>
+  riskyTasks.sort(
+    (a, b) =>
       b.depth -
       a.depth
   );
 
 
   await processBatchWithIsolation({
-
     state,
-
     tasks:
-      risky,
+      riskyTasks,
 
-    stats,
+    resolveNode:
+      (root, task) =>
+        findByPluginData(
+          root,
+          PD_FLATTEN_TASK,
+          task.marker
+        ),
 
-
-    applyTask:
+    mutateTask:
       async (
         root,
-        task
-      ) => {
-
-        const node =
-          findByPluginData(
-
-            root,
-
-            PD_TASK_ID,
-
-            task.marker
-          );
-
-
-        if (
-          !node
-        ) {
-
-          return {
-
-            root,
-
-            changed:
-              false,
-
-            reason:
-              "container-missing"
-          };
-        }
-
-
-        return await flattenContainerOneLevel(
-
+        node
+      ) =>
+        await flattenContainerOneLevel(
           root,
-
           node
-        );
-      },
+        ),
+
+    stats,
 
 
     onAccepted:
@@ -4659,35 +3742,22 @@ async function processFlattenPlan(
         task,
         result
       ) => {
-
         stats.flattenedContainers++;
 
-
         stats.removedContainers +=
-          result.removed ||
-          0;
-
+          result.removed || 0;
 
         stats.movedLayers +=
-          result.moved ||
-          0;
-
+          result.moved || 0;
 
         stats.visualShells +=
-          result.shells ||
-          0;
-
+          result.shells || 0;
 
         addReport(
-
           stats,
-
           "Container Flatten",
-
           "SUCCESS",
-
           null,
-
           `${task.type} "${task.name}" · Batch Verified`
         );
       },
@@ -4698,48 +3768,32 @@ async function processFlattenPlan(
         task,
         tx
       ) => {
-
         stats.flattenRejected++;
-
         stats.preservedAreas++;
 
-
-        const restored =
+        const node =
           findByPluginData(
-
             state.root,
-
-            PD_TASK_ID,
-
+            PD_FLATTEN_TASK,
             task.marker
           );
 
-
-        if (restored) {
-
+        if (node) {
           setPD(
-            restored,
+            node,
             PD_SKIP_FLATTEN,
             "1"
           );
         }
 
-
         addReport(
-
           stats,
-
           "Container Flatten",
-
           "REJECTED",
-
-          restored,
-
+          node,
           tx.reason ===
             "visual-changed"
-
             ? "Flatten 시 Render 변경"
-
             : tx.reason
         );
       },
@@ -4756,68 +3810,50 @@ async function processFlattenPlan(
 ========================================================= */
 
 async function convertRootToFrame(root) {
-
   const originalRootName =
     safeName(root);
 
 
   if (
-    safeType(root) ===
-      "FRAME"
+    safeType(root) === "FRAME"
   ) {
-
     return {
-
       root,
-
-      changed:
-        false,
-
+      changed: false,
       reason:
         "already-frame"
     };
   }
 
 
+  /*
+   * Root Instance
+   */
+
   if (
     safeType(root) ===
-      "INSTANCE"
+    "INSTANCE"
   ) {
-
     try {
-
       const detached =
         root.detachInstance();
 
-
       if (
-
         detached &&
-
         isAlive(detached)
       ) {
-
-        root =
-          detached;
-
+        root = detached;
 
         try {
-
           root.name =
             originalRootName;
-
         } catch (_) {}
       }
 
     } catch (_) {
-
       return {
-
         root,
-
-        changed:
-          false,
-
+        changed: false,
         reason:
           "root-instance-detach-failed"
       };
@@ -4826,25 +3862,16 @@ async function convertRootToFrame(root) {
 
 
   if (
-    safeType(root) ===
-      "FRAME"
+    safeType(root) === "FRAME"
   ) {
-
     try {
-
       root.name =
         originalRootName;
-
     } catch (_) {}
 
-
     return {
-
       root,
-
-      changed:
-        true,
-
+      changed: true,
       reason:
         "root-instance-detached"
     };
@@ -4856,20 +3883,12 @@ async function convertRootToFrame(root) {
 
 
   if (
-
     !parent ||
-
-    safeType(parent) !==
-      "PAGE"
+    safeType(parent) !== "PAGE"
   ) {
-
     return {
-
       root,
-
-      changed:
-        false,
-
+      changed: false,
       reason:
         "root-not-page-child"
     };
@@ -4882,17 +3901,10 @@ async function convertRootToFrame(root) {
     );
 
 
-  if (
-    index < 0
-  ) {
-
+  if (index < 0) {
     return {
-
       root,
-
-      changed:
-        false,
-
+      changed: false,
       reason:
         "root-index-invalid"
     };
@@ -4903,55 +3915,28 @@ async function convertRootToFrame(root) {
     safeTransform(root);
 
 
-  if (
-    !transform
-  ) {
-
+  if (!transform) {
     return {
-
       root,
-
-      changed:
-        false,
-
+      changed: false,
       reason:
-        "transform-unavailable"
+        "root-transform-unavailable"
     };
   }
+
+
+  await ensureSubtreeFontsLoaded(
+    root
+  );
 
 
   const children =
     childrenOf(root);
 
 
-  for (
-    const child of children
-  ) {
-
-    if (
-      !await ensureSubtreeFontsLoaded(
-        child
-      )
-    ) {
-
-      return {
-
-        root,
-
-        changed:
-          false,
-
-        reason:
-          "font-unavailable"
-      };
-    }
-  }
-
-
   const snapshots =
     children.map(
       child => ({
-
         child,
 
         transform:
@@ -4966,14 +3951,9 @@ async function convertRootToFrame(root) {
         !item.transform
     )
   ) {
-
     return {
-
       root,
-
-      changed:
-        false,
-
+      changed: false,
       reason:
         "child-transform-unavailable"
     };
@@ -4987,30 +3967,21 @@ async function convertRootToFrame(root) {
   frame.name =
     originalRootName;
 
-
-  frame.fills =
-    [];
-
-
-  frame.clipsContent =
-    false;
+  frame.fills = [];
+  frame.clipsContent = false;
 
 
   try {
-
     frame.layoutMode =
       "NONE";
-
   } catch (_) {}
 
 
   frame.resize(
-
     Math.max(
       root.width,
       0.01
     ),
-
     Math.max(
       root.height,
       0.01
@@ -5026,67 +3997,77 @@ async function convertRootToFrame(root) {
 
   frame.relativeTransform =
     absoluteToRelative(
-
       transform,
-
       parent
     );
 
 
+  /*
+   * Copy visual properties
+   */
+
   try {
-
     if (
-
       "fills" in root &&
-
-      root.fills !==
-        figma.mixed
+      root.fills !== figma.mixed
     ) {
-
       frame.fills =
         root.fills;
     }
-
   } catch (_) {}
 
 
   try {
-
     if (
-
       "strokes" in root &&
-
-      root.strokes !==
-        figma.mixed
+      root.strokes !== figma.mixed
     ) {
-
       frame.strokes =
         root.strokes;
     }
-
   } catch (_) {}
 
 
   try {
+    frame.strokeWeight =
+      root.strokeWeight;
 
+    frame.strokeAlign =
+      root.strokeAlign;
+  } catch (_) {}
+
+
+  try {
     frame.effects =
       root.effects;
-
   } catch (_) {}
 
 
   try {
-
     frame.opacity =
       root.opacity;
+  } catch (_) {}
 
+
+  try {
+    frame.blendMode =
+      root.blendMode;
+  } catch (_) {}
+
+
+  try {
+    if (
+      "clipsContent" in root
+    ) {
+      frame.clipsContent =
+        root.clipsContent;
+    }
   } catch (_) {}
 
 
   for (
     const item of snapshots
   ) {
-
     frame.appendChild(
       item.child
     );
@@ -5094,27 +4075,18 @@ async function convertRootToFrame(root) {
 
     item.child.relativeTransform =
       absoluteToRelative(
-
         item.transform,
-
         frame
       );
   }
 
 
-  safeRemove(
-    root
-  );
+  safeRemove(root);
 
 
   return {
-
-    root:
-      frame,
-
-    changed:
-      true,
-
+    root: frame,
+    changed: true,
     reason:
       "converted-to-frame"
   };
@@ -5125,19 +4097,16 @@ async function processRootConversion(
   state,
   stats
 ) {
-
   if (
     safeType(state.root) ===
-      "FRAME"
+    "FRAME"
   ) {
-
     return;
   }
 
 
   const tx =
     await runSingleVisualTransaction(
-
       state,
 
       async root =>
@@ -5149,45 +4118,26 @@ async function processRootConversion(
     );
 
 
-  if (
-    tx.accepted
-  ) {
-
+  if (tx.accepted) {
     stats.rootConverted++;
 
-
     addReport(
-
       stats,
-
       "Root → Frame",
-
       "SUCCESS",
-
       state.root,
-
-      "대표 Screen Name 유지"
+      "Root name preserved"
     );
 
-  } else if (
-    tx.attempted
-  ) {
-
+  } else if (tx.attempted) {
     stats.rootConversionRejected++;
-
     stats.preservedAreas++;
 
-
     addReport(
-
       stats,
-
       "Root → Frame",
-
       "REJECTED",
-
       state.root,
-
       tx.reason
     );
   }
@@ -5197,18 +4147,8 @@ async function processRootConversion(
 /* =========================================================
    FONT → INTER
 
-   ★ 중요
-
-   Font 변경은 사용자가 체크박스로 직접 요청한 작업이다.
-
-   Inter로 변경하면 Glyph 자체가 달라지므로
-   PNG 결과 역시 달라지는 것이 정상이다.
-
-   따라서 Font → Inter만
-   Visual Rollback 대상에서 제외한다.
-
-   Garbage / Detach / Flatten / Screenshot / Order는
-   기존 Visual Preservation을 그대로 유지한다.
+   사용자가 직접 요청한 visual change.
+   PNG Rollback 대상 아님.
 ========================================================= */
 
 const loadedInterStyles =
@@ -5216,11 +4156,9 @@ const loadedInterStyles =
 
 
 function mapInterStyle(sourceStyle) {
-
   const value =
     String(
-      sourceStyle ||
-      ""
+      sourceStyle || ""
     )
       .toLowerCase()
       .replace(
@@ -5235,14 +4173,8 @@ function mapInterStyle(sourceStyle) {
 
 
   const italic =
-
-    value.includes(
-      "italic"
-    ) ||
-
-    value.includes(
-      "oblique"
-    );
+    value.includes("italic") ||
+    value.includes("oblique");
 
 
   let style =
@@ -5250,132 +4182,61 @@ function mapInterStyle(sourceStyle) {
 
 
   if (
-
-    value.includes(
-      "black"
-    ) ||
-
-    value.includes(
-      "heavy"
-    )
+    value.includes("black") ||
+    value.includes("heavy")
   ) {
-
-    style =
-      "Black";
+    style = "Black";
 
   } else if (
-
-    value.includes(
-      "extra bold"
-    ) ||
-
-    value.includes(
-      "extrabold"
-    ) ||
-
-    value.includes(
-      "ultra bold"
-    ) ||
-
-    value.includes(
-      "ultrabold"
-    )
+    value.includes("extra bold") ||
+    value.includes("extrabold") ||
+    value.includes("ultra bold") ||
+    value.includes("ultrabold")
   ) {
-
-    style =
-      "Extra Bold";
+    style = "Extra Bold";
 
   } else if (
-
-    value.includes(
-      "semi bold"
-    ) ||
-
-    value.includes(
-      "semibold"
-    ) ||
-
-    value.includes(
-      "demi bold"
-    ) ||
-
-    value.includes(
-      "demibold"
-    )
+    value.includes("semi bold") ||
+    value.includes("semibold") ||
+    value.includes("demi bold") ||
+    value.includes("demibold")
   ) {
-
-    style =
-      "Semi Bold";
+    style = "Semi Bold";
 
   } else if (
-    value.includes(
-      "bold"
-    )
+    value.includes("bold")
   ) {
-
-    style =
-      "Bold";
+    style = "Bold";
 
   } else if (
-    value.includes(
-      "medium"
-    )
+    value.includes("medium")
   ) {
-
-    style =
-      "Medium";
+    style = "Medium";
 
   } else if (
-
-    value.includes(
-      "extra light"
-    ) ||
-
-    value.includes(
-      "extralight"
-    ) ||
-
-    value.includes(
-      "ultra light"
-    ) ||
-
-    value.includes(
-      "ultralight"
-    )
+    value.includes("extra light") ||
+    value.includes("extralight") ||
+    value.includes("ultra light") ||
+    value.includes("ultralight")
   ) {
-
-    style =
-      "Extra Light";
+    style = "Extra Light";
 
   } else if (
-    value.includes(
-      "light"
-    )
+    value.includes("light")
   ) {
-
-    style =
-      "Light";
+    style = "Light";
 
   } else if (
-    value.includes(
-      "thin"
-    )
+    value.includes("thin")
   ) {
-
-    style =
-      "Thin";
+    style = "Thin";
   }
 
 
   if (italic) {
-
     return (
-
-      style ===
-        "Regular"
-
+      style === "Regular"
         ? "Italic"
-
         : `${style} Italic`
     );
   }
@@ -5385,15 +4246,9 @@ function mapInterStyle(sourceStyle) {
 }
 
 
-/* =========================================================
-   LOAD INTER STYLE
-========================================================= */
-
 async function loadInterStyle(style) {
-
   const wanted =
-    style ||
-    "Regular";
+    style || "Regular";
 
 
   if (
@@ -5401,27 +4256,19 @@ async function loadInterStyle(style) {
       wanted
     )
   ) {
-
     return wanted;
   }
 
 
   try {
-
     await figma.loadFontAsync({
-
-      family:
-        "Inter",
-
-      style:
-        wanted
+      family: "Inter",
+      style: wanted
     });
-
 
     loadedInterStyles.add(
       wanted
     );
-
 
     return wanted;
 
@@ -5429,110 +4276,85 @@ async function loadInterStyle(style) {
 
 
   /*
-   * 특정 Weight를 지원하지 않으면
-   * Regular fallback
+   * Fallback
    */
 
-  if (
-    !loadedInterStyles.has(
-      "Regular"
-    )
-  ) {
-
-    try {
-
+  try {
+    if (
+      !loadedInterStyles.has(
+        "Regular"
+      )
+    ) {
       await figma.loadFontAsync({
-
-        family:
-          "Inter",
-
-        style:
-          "Regular"
+        family: "Inter",
+        style: "Regular"
       });
-
 
       loadedInterStyles.add(
         "Regular"
       );
-
-    } catch (_) {
-
-      return null;
     }
+
+    return "Regular";
+
+  } catch (_) {
+    return null;
   }
-
-
-  return "Regular";
 }
 
 
 function isInterFontName(fontName) {
-
   return !!(
-
     fontName &&
-
-    fontName !==
-      figma.mixed &&
-
-    fontName.family ===
-      "Inter"
+    fontName !== figma.mixed &&
+    fontName.family === "Inter"
   );
 }
 
 
 /* =========================================================
-   FINAL TEXT SCAN
+   FINAL TEXT PLAN
 
-   구조 변경이 끝난 뒤 실제 남은 Text 전체를 다시 찾는다.
-
-   기존 Execution Plan의 Text 목록을 쓰지 않는다.
+   Screenshot + Flatten 모두 끝난 후
+   실제 Tree에서 다시 전체 Text Scan.
 ========================================================= */
 
-function buildInterTextTasks(
+function buildInterTextPlan(
   root,
   stats
 ) {
-
-  const tasks =
-    [];
-
-
   stats.treeScans++;
+
+  clearPluginKey(
+    root,
+    PD_INTER_TASK
+  );
+
+  const tasks = [];
 
 
   function walk(node) {
-
-    if (
-      !isAlive(node)
-    ) {
-
+    if (!isAlive(node)) {
       return;
     }
 
 
     if (
-      safeType(node) ===
-        "TEXT"
+      safeType(node) === "TEXT"
     ) {
-
       const marker =
         createTaskMarker(
           "inter"
         );
 
-
       setPD(
         node,
-        PD_TASK_ID,
+        PD_INTER_TASK,
         marker
       );
 
-
       tasks.push({
-
         marker,
-
         name:
           safeName(node)
       });
@@ -5543,7 +4365,6 @@ function buildInterTextTasks(
       const child of
       childrenOf(node)
     ) {
-
       walk(child);
     }
   }
@@ -5551,151 +4372,43 @@ function buildInterTextTasks(
 
   walk(root);
 
-
   return tasks;
 }
 
 
 /* =========================================================
-   SET SEGMENT → INTER
-========================================================= */
-
-async function setRangeToInter(
-  node,
-  segment,
-  targetStyle
-) {
-
-  const targetFont = {
-
-    family:
-      "Inter",
-
-    style:
-      targetStyle
-  };
-
-
-  /*
-   * 1차 시도
-   */
-
-  try {
-
-    node.setRangeFontName(
-
-      segment.start,
-
-      segment.end,
-
-      targetFont
-    );
-
-
-    return true;
-
-  } catch (_) {}
-
-
-  /*
-   * 일부 문서는 기존 Font Load가 필요할 수 있음.
-   */
-
-  try {
-
-    if (
-
-      segment.fontName &&
-
-      segment.fontName !==
-        figma.mixed
-    ) {
-
-      await loadFontOnce(
-        segment.fontName
-      );
-    }
-
-
-    node.setRangeFontName(
-
-      segment.start,
-
-      segment.end,
-
-      targetFont
-    );
-
-
-    return true;
-
-  } catch (_) {
-
-    return false;
-  }
-}
-
-
-/* =========================================================
-   TEXT NODE → INTER
+   TEXT → INTER
 ========================================================= */
 
 async function convertTextNodeToInter(node) {
-
   if (
-
     !isAlive(node) ||
-
-    safeType(node) !==
-      "TEXT"
+    safeType(node) !== "TEXT"
   ) {
-
     return {
-
-      changed:
-        false,
-
-      convertedSegments:
-        0,
-
-      failedSegments:
-        0,
-
-      alreadyInter:
-        false,
-
-      reason:
-        "not-text"
+      changed: false,
+      convertedSegments: 0,
+      failedSegments: 0,
+      alreadyInter: false,
+      reason: "not-text"
     };
   }
 
 
   let segments;
 
-
   try {
-
     segments =
       node.getStyledTextSegments(
         ["fontName"]
       );
 
   } catch (_) {
-
     return {
-
-      changed:
-        false,
-
-      convertedSegments:
-        0,
-
-      failedSegments:
-        1,
-
-      alreadyInter:
-        false,
-
+      changed: false,
+      convertedSegments: 0,
+      failedSegments: 1,
+      alreadyInter: false,
       reason:
         "segment-read-failed"
     };
@@ -5703,38 +4416,42 @@ async function convertTextNodeToInter(node) {
 
 
   /*
-   * 빈 Text Layer
+   * Empty text
    */
 
   if (
-    segments.length ===
-      0
+    segments.length === 0
   ) {
+    try {
+      if (
+        isInterFontName(
+          node.fontName
+        )
+      ) {
+        return {
+          changed: false,
+          convertedSegments: 0,
+          failedSegments: 0,
+          alreadyInter: true,
+          reason:
+            "already-inter"
+        };
+      }
+    } catch (_) {}
 
-    const regular =
+
+    const style =
       await loadInterStyle(
         "Regular"
       );
 
 
-    if (
-      !regular
-    ) {
-
+    if (!style) {
       return {
-
-        changed:
-          false,
-
-        convertedSegments:
-          0,
-
-        failedSegments:
-          1,
-
-        alreadyInter:
-          false,
-
+        changed: false,
+        convertedSegments: 0,
+        failedSegments: 1,
+        alreadyInter: false,
         reason:
           "inter-unavailable"
       };
@@ -5742,106 +4459,46 @@ async function convertTextNodeToInter(node) {
 
 
     try {
-
-      if (
-        isInterFontName(
-          node.fontName
-        )
-      ) {
-
-        return {
-
-          changed:
-            false,
-
-          convertedSegments:
-            0,
-
-          failedSegments:
-            0,
-
-          alreadyInter:
-            true,
-
-          reason:
-            "already-inter"
-        };
-      }
-
-
       node.fontName = {
-
-        family:
-          "Inter",
-
-        style:
-          regular
+        family: "Inter",
+        style
       };
 
-
       return {
-
-        changed:
-          true,
-
-        convertedSegments:
-          1,
-
-        failedSegments:
-          0,
-
-        alreadyInter:
-          false,
-
+        changed: true,
+        convertedSegments: 1,
+        failedSegments: 0,
+        alreadyInter: false,
         reason:
           "font-converted"
       };
 
     } catch (_) {
-
       return {
-
-        changed:
-          false,
-
-        convertedSegments:
-          0,
-
-        failedSegments:
-          1,
-
-        alreadyInter:
-          false,
-
+        changed: false,
+        convertedSegments: 0,
+        failedSegments: 1,
+        alreadyInter: false,
         reason:
-          "empty-text-font-set-failed"
+          "font-set-failed"
       };
     }
   }
 
 
-  let convertedSegments =
-    0;
-
-
-  let failedSegments =
-    0;
-
-
-  let nonInterSegments =
-    0;
+  let convertedSegments = 0;
+  let failedSegments = 0;
+  let nonInterSegments = 0;
 
 
   for (
     const segment of segments
   ) {
-
     if (
       isInterFontName(
         segment.fontName
       )
     ) {
-
       continue;
     }
 
@@ -5849,82 +4506,100 @@ async function convertTextNodeToInter(node) {
     nonInterSegments++;
 
 
-    const sourceStyle =
-
-      segment.fontName &&
-
-      segment.fontName !==
-        figma.mixed
-
-        ? segment.fontName.style
-
-        : "Regular";
+    const originalFont =
+      segment.fontName;
 
 
-    const mappedStyle =
-      mapInterStyle(
-        sourceStyle
+    if (
+      originalFont &&
+      originalFont !== figma.mixed
+    ) {
+      /*
+       * Text를 수정하기 전에 원본 Font도 로드.
+       */
+      await loadFontOnce(
+        originalFont
       );
+    }
+
+
+    const sourceStyle =
+      originalFont &&
+      originalFont !== figma.mixed
+        ? originalFont.style
+        : "Regular";
 
 
     const targetStyle =
       await loadInterStyle(
-        mappedStyle
+        mapInterStyle(
+          sourceStyle
+        )
       );
 
 
-    if (
-      !targetStyle
-    ) {
-
+    if (!targetStyle) {
       failedSegments++;
-
-
       continue;
     }
 
 
-    const success =
-      await setRangeToInter(
-
-        node,
-
-        segment,
-
-        targetStyle
+    try {
+      node.setRangeFontName(
+        segment.start,
+        segment.end,
+        {
+          family: "Inter",
+          style: targetStyle
+        }
       );
-
-
-    if (success) {
 
       convertedSegments++;
 
-    } else {
+    } catch (_) {
+      /*
+       * Regular 최종 fallback
+       */
 
-      failedSegments++;
+      const regular =
+        await loadInterStyle(
+          "Regular"
+        );
+
+
+      if (!regular) {
+        failedSegments++;
+        continue;
+      }
+
+
+      try {
+        node.setRangeFontName(
+          segment.start,
+          segment.end,
+          {
+            family: "Inter",
+            style: regular
+          }
+        );
+
+        convertedSegments++;
+
+      } catch (_) {
+        failedSegments++;
+      }
     }
   }
 
 
   if (
-    nonInterSegments ===
-      0
+    nonInterSegments === 0
   ) {
-
     return {
-
-      changed:
-        false,
-
-      convertedSegments:
-        0,
-
-      failedSegments:
-        0,
-
-      alreadyInter:
-        true,
-
+      changed: false,
+      convertedSegments: 0,
+      failedSegments: 0,
+      alreadyInter: true,
       reason:
         "already-inter"
     };
@@ -5932,94 +4607,77 @@ async function convertTextNodeToInter(node) {
 
 
   return {
-
     changed:
-      convertedSegments >
-      0,
+      convertedSegments > 0,
 
     convertedSegments,
-
     failedSegments,
 
-    alreadyInter:
-      false,
+    alreadyInter: false,
 
     reason:
-
-      failedSegments ===
-        0
-
+      failedSegments === 0
         ? "font-converted"
-
-        : convertedSegments >
-            0
-
+        : convertedSegments > 0
           ? "partially-converted"
-
           : "font-conversion-failed"
   };
 }
 
 
 /* =========================================================
-   PROCESS FONT → INTER
+   INTER PHASE
 
-   ★ Visual Transaction을 사용하지 않는다.
+   PNG Verification 없음.
 ========================================================= */
 
-async function processTextTasks(
+async function processInterPhase(
   state,
-  tasks,
   stats
 ) {
-
   if (
     !convertFontToInter
   ) {
-
     return;
   }
 
 
+  const tasks =
+    buildInterTextPlan(
+      state.root,
+      stats
+    );
+
+
+  /*
+   * 여기서 task별 PNG 검증은 없다.
+   *
+   * Text 수정 API 자체는 각 Text에 호출해야 하지만
+   * Rendering 비교나 clone/rollback은 하지 않으므로
+   * 기존 버전보다 훨씬 빠르다.
+   */
+
   for (
     const task of tasks
   ) {
-
     const text =
       findByPluginData(
-
         state.root,
-
-        PD_TASK_ID,
-
+        PD_INTER_TASK,
         task.marker
       );
 
 
-    if (
-
-      !text ||
-
-      safeType(text) !==
-        "TEXT"
-    ) {
-
+    if (!text) {
       stats.failedFontConversions++;
 
-
       addReport(
-
         stats,
-
         "Font → Inter",
-
         "REJECTED",
-
-        text,
-
-        `"${task.name}" · Text Layer를 찾을 수 없음`
+        null,
+        `"${task.name}" · Text missing`
       );
-
 
       continue;
     }
@@ -6031,62 +4689,35 @@ async function processTextTasks(
       );
 
 
-    setPD(
-      text,
-      PD_INTER_DONE,
-      "1"
-    );
-
-
-    if (
-      conversion.changed
-    ) {
-
+    if (conversion.changed) {
       stats.convertedTexts++;
 
-
       stats.convertedFontSegments +=
-        conversion.convertedSegments ||
-        0;
+        conversion.convertedSegments || 0;
 
 
       if (
-        conversion.failedSegments >
-        0
+        conversion.failedSegments > 0
       ) {
-
         stats.failedFontConversions++;
 
-
         addReport(
-
           stats,
-
           "Font → Inter",
-
           "REJECTED",
-
           text,
-
-          `${conversion.convertedSegments} segment converted / ${conversion.failedSegments} segment failed`
+          `${conversion.convertedSegments} converted / ${conversion.failedSegments} failed`
         );
 
       } else {
-
         addReport(
-
           stats,
-
           "Font → Inter",
-
           "SUCCESS",
-
           text,
-
-          `${conversion.convertedSegments} segment(s) → Inter`
+          `${conversion.convertedSegments} segment(s)`
         );
       }
-
 
       continue;
     }
@@ -6095,20 +4726,13 @@ async function processTextTasks(
     if (
       conversion.alreadyInter
     ) {
-
       addReport(
-
         stats,
-
         "Font → Inter",
-
         "SKIPPED",
-
         text,
-
         "Already Inter"
       );
-
 
       continue;
     }
@@ -6116,19 +4740,12 @@ async function processTextTasks(
 
     stats.failedFontConversions++;
 
-
     addReport(
-
       stats,
-
       "Font → Inter",
-
       "REJECTED",
-
       text,
-
-      conversion.reason ||
-      "Font conversion failed"
+      conversion.reason
     );
   }
 }
@@ -6139,89 +4756,45 @@ async function processTextTasks(
 ========================================================= */
 
 function looksLikeScreenshotName(name) {
-
   const value =
-    String(
-      name ||
-      ""
-    )
+    String(name || "")
       .toLowerCase();
 
-
   return (
-
-    value.includes(
-      "screenshot"
-    ) ||
-
-    value.includes(
-      "screen shot"
-    ) ||
-
-    value.includes(
-      "스크린샷"
-    )
+    value.includes("screenshot") ||
+    value.includes("screen shot") ||
+    value.includes("스크린샷")
   );
 }
 
 
 function looksLikeIconName(name) {
-
   const value =
-    String(
-      name ||
-      ""
-    )
+    String(name || "")
       .toLowerCase();
 
-
   return (
-
-    value ===
-      "icon" ||
-
-    value.startsWith(
-      "icon/"
-    ) ||
-
-    value.includes(
-      "/icon"
-    ) ||
-
-    value.startsWith(
-      "ic_"
-    ) ||
-
-    value.includes(
-      "/ic_"
-    ) ||
-
-    value.includes(
-      "material-symbol"
-    ) ||
-
-    value.includes(
-      "material_symbol"
-    )
+    value === "icon" ||
+    value.startsWith("icon/") ||
+    value.includes("/icon") ||
+    value.startsWith("ic_") ||
+    value.includes("/ic_") ||
+    value.includes("material-symbol") ||
+    value.includes("material_symbol")
   );
 }
 
 
 function looksLikeIcon(node) {
-
   return (
-
     looksLikeIconName(
       safeName(node)
     ) ||
-
     [
-
       "VECTOR",
       "BOOLEAN_OPERATION",
       "POLYGON",
       "STAR"
-
     ].includes(
       safeType(node)
     )
@@ -6230,45 +4803,35 @@ function looksLikeIcon(node) {
 
 
 function looksLikeLine(node) {
-
   const type =
     safeType(node);
 
 
   if (
-    type ===
-      "LINE"
+    type === "LINE"
   ) {
-
     return true;
   }
 
 
   if (
-
     [
       "RECTANGLE",
       "VECTOR"
     ].includes(type) &&
-
     !hasImageFill(node)
   ) {
-
     try {
-
       return (
-
         (
           node.width >= 8 &&
           node.height <= 2
         ) ||
-
         (
           node.height >= 8 &&
           node.width <= 2
         )
       );
-
     } catch (_) {}
   }
 
@@ -6281,15 +4844,11 @@ function looksLikeScreenshot(
   node,
   root
 ) {
-
   if (
-
     safeType(node) !==
       "RECTANGLE" ||
-
     !hasImageFill(node)
   ) {
-
     return false;
   }
 
@@ -6299,114 +4858,71 @@ function looksLikeScreenshot(
       safeName(node)
     )
   ) {
-
     return true;
   }
 
 
   try {
-
     return (
-
-      root.width >
-        0 &&
-
-      root.height >
-        0 &&
+      root.width > 0 &&
+      root.height > 0 &&
 
       node.width /
-        root.width >=
-        0.7 &&
+        root.width >= 0.7 &&
 
       node.height /
-        root.height >=
-        0.5
+        root.height >= 0.5
     );
-
   } catch (_) {
-
     return false;
   }
 }
 
 
 function looksLikeIPhone(node) {
-
   const value =
     safeName(node)
       .toLowerCase();
 
-
   return (
-
-    value.includes(
-      "iphone"
-    ) ||
-
-    value.includes(
-      "i phone"
-    )
+    value.includes("iphone") ||
+    value.includes("i phone")
   );
 }
 
 
-/* =========================================================
-   CONTAINER NAMING
-========================================================= */
-
 function getContainerLayerName(node) {
-
   const type =
     safeType(node);
 
 
   if (
-
-    type ===
-      "FRAME" &&
-
+    type === "FRAME" &&
     isAutoLayout(node)
   ) {
-
-    return (
-      "auto layout"
-    );
+    return "auto layout";
   }
 
 
   if (
-
-    type ===
-      "FRAME" &&
-
+    type === "FRAME" &&
     looksLikeIPhone(node)
   ) {
-
-    return (
-      "iphone"
-    );
+    return "iphone";
   }
 
 
   if (
-    type ===
-      "FRAME"
+    type === "FRAME"
   ) {
-
-    return (
-      "frame"
-    );
+    return "frame";
   }
 
 
   if (
-    type ===
-      "GROUP"
+    type === "GROUP"
   ) {
-
-    return (
-      "group"
-    );
+    return "group";
   }
 
 
@@ -6418,35 +4934,31 @@ function desiredLayerName(
   node,
   root
 ) {
-
   const type =
     safeType(node);
-
 
   const current =
     safeName(node);
 
 
   /*
-   * 대표 Screen 이름은 항상 유지
+   * Representative root
    */
 
   if (
     node === root
   ) {
-
     return current;
   }
 
 
   /*
-   * LID 이름 보호
+   * LID
    */
 
   if (
     isLidName(current)
   ) {
-
     return current;
   }
 
@@ -6456,16 +4968,11 @@ function desiredLayerName(
    */
 
   if (
-    type ===
-      "TEXT"
+    type === "TEXT"
   ) {
-
     return (
-
       renameTextToHyphen
-
         ? "-"
-
         : current
     );
   }
@@ -6476,22 +4983,15 @@ function desiredLayerName(
    */
 
   if (
-
-    type ===
-      "RECTANGLE" &&
-
+    type === "RECTANGLE" &&
     hasImageFill(node)
   ) {
-
     return (
-
       looksLikeScreenshot(
         node,
         root
       )
-
         ? "screenshot"
-
         : "image"
     );
   }
@@ -6500,82 +5000,54 @@ function desiredLayerName(
   if (
     looksLikeLine(node)
   ) {
-
-    return (
-      "line"
-    );
+    return "line";
   }
 
 
   if (
     looksLikeIcon(node)
   ) {
-
-    return (
-      "icon"
-    );
+    return "icon";
   }
 
 
   if (
     isShapeNode(node)
   ) {
-
-    return (
-      "shape"
-    );
+    return "shape";
   }
 
 
   /*
-   * Frame / Group / Auto Layout
-   * 선택 옵션
+   * Optional container naming
    */
 
   if (
-
-    type ===
-      "FRAME" ||
-
-    type ===
-      "GROUP"
+    type === "FRAME" ||
+    type === "GROUP"
   ) {
+    if (!renameContainers) {
+      return current;
+    }
 
     return (
-
-      renameContainers
-
-        ? (
-            getContainerLayerName(
-              node
-            ) ||
-            current
-          )
-
-        : current
+      getContainerLayerName(node) ||
+      current
     );
   }
 
 
   if (
-    type ===
-      "COMPONENT"
+    type === "COMPONENT"
   ) {
-
-    return (
-      "component"
-    );
+    return "component";
   }
 
 
   if (
-    type ===
-      "INSTANCE"
+    type === "INSTANCE"
   ) {
-
-    return (
-      "instance"
-    );
+    return "instance";
   }
 
 
@@ -6587,13 +5059,8 @@ function processNaming(
   root,
   stats
 ) {
-
   function walk(node) {
-
-    if (
-      !isAlive(node)
-    ) {
-
+    if (!isAlive(node)) {
       return;
     }
 
@@ -6601,7 +5068,6 @@ function processNaming(
     if (
       node !== root
     ) {
-
       const wanted =
         desiredLayerName(
           node,
@@ -6610,38 +5076,17 @@ function processNaming(
 
 
       if (
-
         wanted !== null &&
-
-        wanted !==
-          safeName(node)
+        wanted !== safeName(node)
       ) {
-
         try {
-
           node.name =
             wanted;
-
 
           stats.renamedLayers++;
 
         } catch (_) {
-
           stats.renameSkipped++;
-
-
-          addReport(
-
-            stats,
-
-            "Layer Rename",
-
-            "REJECTED",
-
-            node,
-
-            "Name 변경 실패"
-          );
         }
       }
     }
@@ -6651,11 +5096,9 @@ function processNaming(
       const child of
       childrenOf(node)
     ) {
-
       walk(child);
     }
   }
-
 
   walk(root);
 }
@@ -6666,26 +5109,16 @@ function processNaming(
 ========================================================= */
 
 function getOrderBounds(node) {
-
   const box =
     safeBounds(node);
 
-
-  if (
-    !box
-  ) {
-
+  if (!box) {
     return null;
   }
 
-
   return {
-
-    x:
-      box.x,
-
-    y:
-      box.y,
+    x: box.x,
+    y: box.y,
 
     width:
       box.width,
@@ -6704,42 +5137,27 @@ function getOrderBounds(node) {
 }
 
 
-function isSameVisualRow(
-  a,
-  b
-) {
-
-  if (
-
-    !a ||
-
-    !b
-  ) {
-
+function isSameVisualRow(a, b) {
+  if (!a || !b) {
     return false;
   }
 
 
   if (
-
     Math.abs(
-      a.y -
-      b.y
+      a.y - b.y
     ) <=
       ROW_Y_TOLERANCE
   ) {
-
     return true;
   }
 
 
   const overlap =
-
     Math.min(
       a.bottom,
       b.bottom
     ) -
-
     Math.max(
       a.y,
       b.y
@@ -6747,12 +5165,8 @@ function isSameVisualRow(
 
 
   return (
-
-    overlap >
-      0 &&
-
+    overlap > 0 &&
     overlap >=
-
       Math.min(
         a.height,
         b.height
@@ -6762,52 +5176,29 @@ function isSameVisualRow(
 }
 
 
-function boundsOverlap(
-  a,
-  b
-) {
-
+function boundsOverlap(a, b) {
   return !!(
-
     a &&
-
     b &&
-
     !(
-
-      a.right <=
-        b.x ||
-
-      b.right <=
-        a.x ||
-
-      a.bottom <=
-        b.y ||
-
-      b.bottom <=
-        a.y
+      a.right <= b.x ||
+      b.right <= a.x ||
+      a.bottom <= b.y ||
+      b.bottom <= a.y
     )
   );
 }
 
 
 function buildVisualRows(items) {
-
   const sorted =
     [...items]
       .sort(
-        (
-          a,
-          b
-        ) => {
-
+        (a, b) => {
           if (
-
             !a.bounds &&
-
             !b.bounds
           ) {
-
             return (
               a.originalPanelIndex -
               b.originalPanelIndex
@@ -6815,18 +5206,11 @@ function buildVisualRows(items) {
           }
 
 
-          if (
-            !a.bounds
-          ) {
-
+          if (!a.bounds) {
             return 1;
           }
 
-
-          if (
-            !b.bounds
-          ) {
-
+          if (!b.bounds) {
             return -1;
           }
 
@@ -6837,12 +5221,9 @@ function buildVisualRows(items) {
 
 
           return (
-
             Math.abs(dy) >
               ROW_Y_TOLERANCE
-
               ? dy
-
               : (
                   a.bounds.x -
                   b.bounds.x
@@ -6852,27 +5233,17 @@ function buildVisualRows(items) {
       );
 
 
-  const rows =
-    [];
+  const rows = [];
 
 
   for (
     const item of sorted
   ) {
-
-    if (
-      !item.bounds
-    ) {
-
+    if (!item.bounds) {
       rows.push({
-
-        y:
-          Infinity,
-
-        items:
-          [item]
+        y: Infinity,
+        items: [item]
       });
-
 
       continue;
     }
@@ -6881,44 +5252,30 @@ function buildVisualRows(items) {
     let row =
       rows.find(
         candidate =>
-
           candidate.items.some(
-            current =>
-
-              current.bounds &&
-
+            existing =>
+              existing.bounds &&
               isSameVisualRow(
-                current.bounds,
+                existing.bounds,
                 item.bounds
               )
           )
       );
 
 
-    if (
-      !row
-    ) {
-
+    if (!row) {
       row = {
-
         y:
           item.bounds.y,
 
-        items:
-          []
+        items: []
       };
 
-
-      rows.push(
-        row
-      );
+      rows.push(row);
     }
 
 
-    row.items.push(
-      item
-    );
-
+    row.items.push(item);
 
     row.y =
       Math.min(
@@ -6929,51 +5286,21 @@ function buildVisualRows(items) {
 
 
   rows.sort(
-    (
-      a,
-      b
-    ) =>
-      a.y -
-      b.y
+    (a, b) =>
+      a.y - b.y
   );
 
 
   for (
     const row of rows
   ) {
-
     row.items.sort(
-      (
-        a,
-        b
-      ) => {
-
-        if (
-
-          !a.bounds &&
-
-          !b.bounds
-        ) {
-
-          return (
-            a.originalPanelIndex -
-            b.originalPanelIndex
-          );
-        }
-
-
-        if (
-          !a.bounds
-        ) {
-
+      (a, b) => {
+        if (!a.bounds) {
           return 1;
         }
 
-
-        if (
-          !b.bounds
-        ) {
-
+        if (!b.bounds) {
           return -1;
         }
 
@@ -6984,31 +5311,15 @@ function buildVisualRows(items) {
 
 
         if (
-          Math.abs(dx) >
-          0.1
+          Math.abs(dx) > 0.1
         ) {
-
           return dx;
         }
 
 
-        const dy =
-          a.bounds.y -
-          b.bounds.y;
-
-
-        if (
-          Math.abs(dy) >
-          0.1
-        ) {
-
-          return dy;
-        }
-
-
         return (
-          a.originalPanelIndex -
-          b.originalPanelIndex
+          a.bounds.y -
+          b.bounds.y
         );
       }
     );
@@ -7020,10 +5331,8 @@ function buildVisualRows(items) {
 
 
 function buildSafeDesiredPanelOrder(root) {
-
   const children =
     childrenOf(root);
-
 
   const currentPanel =
     [...children]
@@ -7032,47 +5341,31 @@ function buildSafeDesiredPanelOrder(root) {
 
   const items =
     currentPanel.map(
-      (
-        node,
-        index
-      ) => ({
-
+      (node, index) => ({
         node,
 
         bounds:
-          getOrderBounds(
-            node
-          ),
+          getOrderBounds(node),
 
         originalPanelIndex:
           index,
 
-        desiredRank:
-          0,
+        desiredRank: 0,
 
         outgoing:
           new Set(),
 
-        indegree:
-          0
+        indegree: 0
       })
     );
 
 
-  const rows =
-    buildVisualRows(
-      items
-    );
-
-
-  const visual =
-    [];
-
+  const visual = [];
 
   for (
-    const row of rows
+    const row of
+    buildVisualRows(items)
   ) {
-
     visual.push(
       ...row.items
     );
@@ -7080,11 +5373,7 @@ function buildSafeDesiredPanelOrder(root) {
 
 
   visual.forEach(
-    (
-      item,
-      index
-    ) => {
-
+    (item, index) => {
       item.desiredRank =
         index;
     }
@@ -7092,7 +5381,7 @@ function buildSafeDesiredPanelOrder(root) {
 
 
   /*
-   * 겹치는 레이어는 기존 Z-order 보존
+   * Overlap → existing Z order
    */
 
   for (
@@ -7100,27 +5389,23 @@ function buildSafeDesiredPanelOrder(root) {
     i < items.length;
     i++
   ) {
-
     for (
       let j =
         i + 1;
       j < items.length;
       j++
     ) {
-
       if (
         boundsOverlap(
           items[i].bounds,
           items[j].bounds
         )
       ) {
-
         items[i]
           .outgoing
           .add(
             items[j]
           );
-
 
         items[j]
           .indegree++;
@@ -7132,110 +5417,72 @@ function buildSafeDesiredPanelOrder(root) {
   const available =
     items.filter(
       item =>
-        item.indegree ===
-        0
+        item.indegree === 0
     );
 
 
-  const output =
-    [];
+  const output = [];
 
 
   while (
     available.length
   ) {
-
     available.sort(
-      (
-        a,
-        b
-      ) => (
-
+      (a, b) =>
         (
           a.desiredRank -
           b.desiredRank
         ) ||
-
         (
           a.originalPanelIndex -
           b.originalPanelIndex
         )
-      )
     );
 
 
     const current =
       available.shift();
 
-
-    output.push(
-      current
-    );
+    output.push(current);
 
 
     for (
       const next of
       current.outgoing
     ) {
-
       next.indegree--;
 
-
       if (
-        next.indegree ===
-        0
+        next.indegree === 0
       ) {
-
-        available.push(
-          next
-        );
+        available.push(next);
       }
     }
   }
 
 
   return (
-
-    output.length ===
-      items.length
-
+    output.length === items.length
       ? output
-
       : null
   );
 }
 
 
 async function reorderRootLayers(root) {
-
-  if (
-    !isAlive(root)
-  ) {
-
+  if (!isAlive(root)) {
     return {
-
       root,
-
-      changed:
-        false,
-
-      reason:
-        "root-missing"
+      changed: false,
+      reason: "root-missing"
     };
   }
 
 
-  if (
-    isAutoLayout(root)
-  ) {
-
+  if (isAutoLayout(root)) {
     return {
-
       root,
-
-      changed:
-        false,
-
+      changed: false,
       reason:
         "root-auto-layout"
     };
@@ -7247,19 +5494,12 @@ async function reorderRootLayers(root) {
 
 
   if (
-    children.length <=
-    1
+    children.length <= 1
   ) {
-
     return {
-
       root,
-
-      changed:
-        false,
-
-      reason:
-        "single-layer"
+      changed: false,
+      reason: "single-layer"
     };
   }
 
@@ -7270,19 +5510,11 @@ async function reorderRootLayers(root) {
     );
 
 
-  if (
-    !panel
-  ) {
-
+  if (!panel) {
     return {
-
       root,
-
-      changed:
-        false,
-
-      reason:
-        "z-order-cycle"
+      changed: false,
+      reason: "z-order-cycle"
     };
   }
 
@@ -7298,27 +5530,16 @@ async function reorderRootLayers(root) {
 
   const changed =
     children.some(
-      (
-        node,
-        index
-      ) =>
-
+      (node, index) =>
         node !==
         desiredChildren[index]
     );
 
 
-  if (
-    !changed
-  ) {
-
+  if (!changed) {
     return {
-
       root,
-
-      changed:
-        false,
-
+      changed: false,
       reason:
         "already-ordered"
     };
@@ -7327,18 +5548,14 @@ async function reorderRootLayers(root) {
 
   for (
     let i = 0;
-    i < desiredChildren.length;
+    i <
+      desiredChildren.length;
     i++
   ) {
-
     const node =
       desiredChildren[i];
 
-
-    if (
-      isAlive(node)
-    ) {
-
+    if (isAlive(node)) {
       root.insertChild(
         i,
         node
@@ -7348,26 +5565,19 @@ async function reorderRootLayers(root) {
 
 
   return {
-
     root,
-
-    changed:
-      true,
-
-    reason:
-      "ordered"
+    changed: true,
+    reason: "ordered"
   };
 }
 
 
-async function processOrder(
+async function processOrderPhase(
   state,
   stats
 ) {
-
   const tx =
     await runSingleVisualTransaction(
-
       state,
 
       async root =>
@@ -7379,48 +5589,28 @@ async function processOrder(
     );
 
 
-  if (
-    tx.accepted
-  ) {
-
+  if (tx.accepted) {
     stats.orderChanged++;
 
-
     addReport(
-
       stats,
-
       "Layer Order",
-
       "SUCCESS",
-
       state.root,
-
       "Top → Bottom / Left → Right"
     );
 
-  } else if (
-    tx.attempted
-  ) {
-
+  } else if (tx.attempted) {
     stats.orderRejected++;
 
-
     addReport(
-
       stats,
-
       "Layer Order",
-
       "REJECTED",
-
       state.root,
-
       tx.reason ===
         "visual-changed"
-
-        ? "Z-order 변경 감지 · 기존 순서 유지"
-
+        ? "Z-order 변경 감지"
         : tx.reason
     );
   }
@@ -7432,34 +5622,25 @@ async function processOrder(
 ========================================================= */
 
 function countAllLayers(root) {
-
-  let count =
-    0;
-
+  let count = 0;
 
   function walk(node) {
-
     for (
       const child of
       childrenOf(node)
     ) {
-
       count++;
-
       walk(child);
     }
   }
 
-
   walk(root);
-
 
   return count;
 }
 
 
 function analyzeScreen(root) {
-
   const garbageItems =
     collectGarbageItems(
       root
@@ -7467,7 +5648,6 @@ function analyzeScreen(root) {
 
 
   const result = {
-
     total:
       1 +
       countAllLayers(root),
@@ -7478,21 +5658,15 @@ function analyzeScreen(root) {
     garbageItems,
 
     containers: 0,
-
     instances: 0,
-
     autoLayouts: 0,
-
     masks: 0,
-
     clips: 0,
 
     text: 0,
-
     nonInterText: 0,
 
     icons: 0,
-
     lines: 0,
 
     bakeCandidates: 0
@@ -7500,22 +5674,15 @@ function analyzeScreen(root) {
 
 
   function walk(node) {
-
-    if (
-      !isAlive(node)
-    ) {
-
+    if (!isAlive(node)) {
       return;
     }
 
 
     if (
-
-      isContainer(node) &&
-
-      node !== root
+      node !== root &&
+      isContainer(node)
     ) {
-
       result.containers++;
     }
 
@@ -7524,7 +5691,6 @@ function analyzeScreen(root) {
       safeType(node) ===
       "INSTANCE"
     ) {
-
       result.instances++;
     }
 
@@ -7532,7 +5698,6 @@ function analyzeScreen(root) {
     if (
       isAutoLayout(node)
     ) {
-
       result.autoLayouts++;
     }
 
@@ -7540,20 +5705,14 @@ function analyzeScreen(root) {
     if (
       isMaskNode(node)
     ) {
-
       result.masks++;
     }
 
 
     if (
-
       isContainer(node) &&
-
-      actuallyClipsChildren(
-        node
-      )
+      actuallyClipsChildren(node)
     ) {
-
       result.clips++;
     }
 
@@ -7562,12 +5721,10 @@ function analyzeScreen(root) {
       safeType(node) ===
       "TEXT"
     ) {
-
       result.text++;
 
 
       try {
-
         const segments =
           node.getStyledTextSegments(
             ["fontName"]
@@ -7577,22 +5734,15 @@ function analyzeScreen(root) {
         if (
           segments.some(
             segment =>
-
-              !segment.fontName ||
-
-              segment.fontName ===
-                figma.mixed ||
-
-              segment.fontName.family !==
-                "Inter"
+              !isInterFontName(
+                segment.fontName
+              )
           )
         ) {
-
           result.nonInterText++;
         }
 
       } catch (_) {
-
         result.nonInterText++;
       }
     }
@@ -7601,7 +5751,6 @@ function analyzeScreen(root) {
     if (
       looksLikeIcon(node)
     ) {
-
       result.icons++;
     }
 
@@ -7609,7 +5758,6 @@ function analyzeScreen(root) {
     if (
       looksLikeLine(node)
     ) {
-
       result.lines++;
     }
 
@@ -7618,7 +5766,6 @@ function analyzeScreen(root) {
       const child of
       childrenOf(node)
     ) {
-
       walk(child);
     }
   }
@@ -7644,14 +5791,10 @@ function commitWorkingRoot(
   original,
   working
 ) {
-
   if (
-
     !isAlive(original) ||
-
     !isAlive(working)
   ) {
-
     return null;
   }
 
@@ -7661,13 +5804,10 @@ function commitWorkingRoot(
 
 
   if (
-
     !parent ||
-
     safeType(parent) !==
       "PAGE"
   ) {
-
     return null;
   }
 
@@ -7678,31 +5818,29 @@ function commitWorkingRoot(
     );
 
 
-  if (
-    index < 0
-  ) {
-
+  if (index < 0) {
     return null;
   }
 
 
+  /*
+   * Restore original location.
+   */
+
   working.x =
     original.x;
-
 
   working.y =
     original.y;
 
 
   /*
-   * 대표 Screen 이름 보존
+   * Root Screen name always preserved.
    */
 
   try {
-
     working.name =
       original.name;
-
   } catch (_) {}
 
 
@@ -7712,9 +5850,7 @@ function commitWorkingRoot(
   );
 
 
-  safeRemove(
-    original
-  );
+  safeRemove(original);
 
 
   return working;
@@ -7723,30 +5859,25 @@ function commitWorkingRoot(
 
 /* =========================================================
    PROCESS ROOT
+
+   IMPORTANT:
+   Structural phase → re-scan → next phase.
+
+   No stale global execution plan.
 ========================================================= */
 
 async function processRoot(
   originalRoot
 ) {
-
   const stats =
     createStats();
 
 
-  if (
-    !isAlive(originalRoot)
-  ) {
-
+  if (!isAlive(originalRoot)) {
     return {
-
-      success:
-        false,
-
-      root:
-        originalRoot,
-
+      success: false,
+      root: originalRoot,
       stats,
-
       fatalReason:
         "Root missing"
     };
@@ -7760,25 +5891,16 @@ async function processRoot(
 
 
   if (
-
     !parent ||
-
     safeType(parent) !==
       "PAGE"
   ) {
-
     return {
-
-      success:
-        false,
-
-      root:
-        originalRoot,
-
+      success: false,
+      root: originalRoot,
       stats,
-
       fatalReason:
-        "Screen must be a direct Page child."
+        "Screen must be direct Page child."
     };
   }
 
@@ -7793,365 +5915,281 @@ async function processRoot(
 
 
   try {
-
     state =
       await createWorkingState(
         originalRoot
       );
-
   } catch (error) {
-
     return {
-
-      success:
-        false,
-
-      root:
-        originalRoot,
-
+      success: false,
+      root: originalRoot,
       stats,
 
       fatalReason:
-        error.message ||
-        String(error)
+        error &&
+        error.message
+          ? error.message
+          : String(error)
     };
   }
 
 
   try {
-
     state.root.name =
       originalScreenName;
-
   } catch (_) {}
-
-
-  /* =====================================================
-     1. GARBAGE
-  ===================================================== */
-
-  markSelectedGarbage(
-
-    originalRoot,
-
-    state.root
-  );
-
-
-  await processGarbage(
-    state,
-    stats
-  );
-
-
-  /* =====================================================
-     2. ROOT FRAME
-  ===================================================== */
-
-  await processRootConversion(
-    state,
-    stats
-  );
 
 
   try {
 
-    state.root.name =
-      originalScreenName;
+    /* =====================================================
+       PHASE 1
+       Garbage
+    ===================================================== */
 
-  } catch (_) {}
-
-
-  /* =====================================================
-     3. INSTANCE
-  ===================================================== */
-
-  let plan =
-    buildExecutionPlan(
-      state.root,
-      stats
+    markSelectedGarbage(
+      originalRoot,
+      state.root
     );
 
 
-  for (
-    let round = 0;
-    round <
-      MAX_INSTANCE_ROUNDS;
-    round++
-  ) {
-
-    if (
-      plan.instances.length ===
-        0
-    ) {
-
-      break;
-    }
-
-
-    await processInstanceTasks(
-
+    await processGarbage(
       state,
-
-      plan.instances,
-
       stats
     );
 
 
-    if (
-      round <
-      MAX_INSTANCE_ROUNDS -
-        1
-    ) {
+    /* =====================================================
+       PHASE 2
+       Root → Frame
+    ===================================================== */
 
-      plan =
-        buildExecutionPlan(
-
-          state.root,
-
-          stats
-        );
-    }
-  }
+    await processRootConversion(
+      state,
+      stats
+    );
 
 
-  /* =====================================================
-     4. STRUCTURE PLAN
-  ===================================================== */
+    try {
+      state.root.name =
+        originalScreenName;
+    } catch (_) {}
 
-  plan =
-    buildExecutionPlan(
+
+    /* =====================================================
+       PHASE 3
+       Instance
+
+       자체적으로 round마다 re-scan.
+    ===================================================== */
+
+    await processInstancePhase(
+      state,
+      stats
+    );
+
+
+    /* =====================================================
+       PHASE 4
+       Screenshot / Mask / Clip
+
+       현재 Tree 새 Scan.
+    ===================================================== */
+
+    await processScreenshotPhase(
+      state,
+      stats
+    );
+
+
+    /* =====================================================
+       PHASE 5
+       Flatten
+
+       Screenshot Plan은 여기서 절대 재사용하지 않는다.
+       새로운 Tree에서 Flatten Plan 생성.
+    ===================================================== */
+
+    await processFlattenPhase(
+      state,
+      stats
+    );
+
+
+    /* =====================================================
+       PHASE 6
+       Inter
+
+       Final Tree 전체 Text 재검색.
+       PNG verification 없음.
+    ===================================================== */
+
+    await processInterPhase(
+      state,
+      stats
+    );
+
+
+    /* =====================================================
+       PHASE 7
+       Naming
+    ===================================================== */
+
+    processNaming(
       state.root,
       stats
     );
 
 
-  /* =====================================================
-     5. MASK / CLIP
-  ===================================================== */
-
-  await processScreenshotTasks(
-
-    state,
-
-    plan.screenshots,
-
-    stats
-  );
+    try {
+      state.root.name =
+        originalScreenName;
+    } catch (_) {}
 
 
-  /* =====================================================
-     6. FLATTEN
-  ===================================================== */
+    /* =====================================================
+       PHASE 8
+       Layer Order
+    ===================================================== */
 
-  await processFlattenPlan(
-
-    state,
-
-    plan,
-
-    stats
-  );
+    await processOrderPhase(
+      state,
+      stats
+    );
 
 
-  /* =====================================================
-     7. FONT → INTER
+    /*
+     * Order rollback이 발생했더라도
+     * root name을 다시 강제 보존.
+     */
 
-     ★ 구조 작업 이후 실제 Text 전체를 다시 Scan
-  ===================================================== */
+    try {
+      state.root.name =
+        originalScreenName;
+    } catch (_) {}
 
-  if (
-    convertFontToInter
-  ) {
 
-    const interTasks =
-      buildInterTextTasks(
+    /* =====================================================
+       PHASE 9
+       Remove internal data
+    ===================================================== */
 
-        state.root,
+    clearInternalPluginData(
+      state.root
+    );
 
-        stats
+
+    /* =====================================================
+       PHASE 10
+       Commit
+    ===================================================== */
+
+    const committed =
+      commitWorkingRoot(
+        originalRoot,
+        state.root
       );
 
 
-    await processTextTasks(
+    if (!committed) {
+      if (
+        state.root &&
+        isAlive(state.root)
+      ) {
+        safeRemove(
+          state.root
+        );
+      }
 
-      state,
-
-      interTasks,
-
-      stats
-    );
-  }
-
-
-  /* =====================================================
-     8. NAMING
-  ===================================================== */
-
-  processNaming(
-    state.root,
-    stats
-  );
-
-
-  try {
-
-    state.root.name =
-      originalScreenName;
-
-  } catch (_) {}
+      return {
+        success: false,
+        root: originalRoot,
+        stats,
+        fatalReason:
+          "Commit failed"
+      };
+    }
 
 
-  addReport(
-
-    stats,
-
-    "Layer Naming",
-
-    "SUCCESS",
-
-    state.root,
-
-    `${stats.renamedLayers} layers renamed · Root name preserved`
-  );
+    try {
+      committed.name =
+        originalScreenName;
+    } catch (_) {}
 
 
-  /* =====================================================
-     9. ORDER
-  ===================================================== */
-
-  await processOrder(
-    state,
-    stats
-  );
-
-
-  try {
-
-    state.root.name =
-      originalScreenName;
-
-  } catch (_) {}
-
-
-  /* =====================================================
-     10. CLEAN INTERNAL DATA
-  ===================================================== */
-
-  clearInternalPluginData(
-    state.root
-  );
-
-
-  /* =====================================================
-     11. COMMIT
-  ===================================================== */
-
-  const committed =
-    commitWorkingRoot(
-
-      originalRoot,
-
-      state.root
-    );
-
-
-  if (
-    !committed
-  ) {
-
-    safeRemove(
-      state.root
-    );
+    stats.finalLayers =
+      childrenOf(
+        committed
+      ).length;
 
 
     return {
+      success: true,
+      root: committed,
+      stats,
+      fatalReason: null
+    };
 
-      success:
-        false,
 
-      root:
-        originalRoot,
+  } catch (error) {
+    /*
+     * Fatal processing error.
+     *
+     * Original remains untouched because we were working on clone.
+     */
 
+    if (
+      state &&
+      state.root &&
+      isAlive(state.root)
+    ) {
+      safeRemove(
+        state.root
+      );
+    }
+
+
+    return {
+      success: false,
+      root: originalRoot,
       stats,
 
       fatalReason:
-        "Commit failed"
+        error &&
+        error.message
+          ? error.message
+          : String(error)
     };
   }
-
-
-  try {
-
-    committed.name =
-      originalScreenName;
-
-  } catch (_) {}
-
-
-  stats.finalLayers =
-    childrenOf(
-      committed
-    ).length;
-
-
-  return {
-
-    success:
-      true,
-
-    root:
-      committed,
-
-    stats,
-
-    fatalReason:
-      null
-  };
 }
 
 
 /* =========================================================
-   GET ANALYZED ROOTS
+   ANALYZED ROOTS
 ========================================================= */
 
 async function getAnalyzedRoots() {
-
-  const result =
-    [];
-
+  const result = [];
 
   for (
     const id of
     analyzedRootIds
   ) {
-
     try {
-
       const node =
         await figma.getNodeByIdAsync(
           id
         );
 
-
       if (
-
         node &&
-
         isAlive(node) &&
-
         isSupportedRoot(node)
       ) {
-
-        result.push(
-          node
-        );
+        result.push(node);
       }
-
     } catch (_) {}
   }
-
 
   return result;
 }
@@ -8170,45 +6208,31 @@ async msg => {
   ===================================================== */
 
   if (
-    msg.type ===
-    "close"
+    msg.type === "close"
   ) {
-
     figma.closePlugin();
-
-
     return;
   }
 
 
   /* =====================================================
-     SELECT GARBAGE LAYER
+     VIEW GARBAGE
   ===================================================== */
 
   if (
-    msg.type ===
-    "select-layer"
+    msg.type === "select-layer"
   ) {
-
     try {
-
       const node =
         await figma.getNodeByIdAsync(
           msg.nodeId
         );
 
-
       if (
-
         !node ||
-
-        node.type ===
-          "PAGE" ||
-
-        node.type ===
-          "DOCUMENT"
+        node.type === "PAGE" ||
+        node.type === "DOCUMENT"
       ) {
-
         return;
       }
 
@@ -8225,7 +6249,8 @@ async msg => {
 
 
     /*
-     * analyzedRootIds는 변경하지 않는다.
+     * IMPORTANT:
+     * 보기 버튼은 Analyze root를 변경하지 않는다.
      */
 
     return;
@@ -8237,35 +6262,26 @@ async msg => {
   ===================================================== */
 
   if (
-    msg.type ===
-    "analyze"
+    msg.type === "analyze"
   ) {
-
     const selection =
-
       [
         ...figma.currentPage.selection
       ]
-
         .filter(
           isAlive
         );
 
 
     if (
-      selection.length ===
-        0
+      selection.length === 0
     ) {
-
       figma.ui.postMessage({
-
-        type:
-          "error",
+        type: "error",
 
         message:
           "정리할 최상위 Screen Layer를 선택해주세요."
       });
-
 
       return;
     }
@@ -8276,11 +6292,8 @@ async msg => {
         isSupportedRoot
       )
     ) {
-
       figma.ui.postMessage({
-
-        type:
-          "error",
+        type: "error",
 
         message:
 `지원하지 않는 Layer가 포함되어 있습니다.
@@ -8292,29 +6305,23 @@ async msg => {
 • Instance`
       });
 
-
       return;
     }
 
 
     analyzedRootIds =
-
       selection
-
         .map(
           safeId
         )
-
         .filter(
           Boolean
         );
 
 
     const results =
-
       selection.map(
         root => ({
-
           name:
             safeName(root),
 
@@ -8322,9 +6329,8 @@ async msg => {
             safeType(root),
 
           willConvertToFrame:
-
             safeType(root) !==
-              "FRAME",
+            "FRAME",
 
           ...analyzeScreen(
             root
@@ -8334,13 +6340,9 @@ async msg => {
 
 
     figma.ui.postMessage({
-
-      type:
-        "analysis",
-
+      type: "analysis",
       results
     });
-
 
     return;
   }
@@ -8351,35 +6353,28 @@ async msg => {
   ===================================================== */
 
   if (
-    msg.type ===
-    "clean"
+    msg.type === "clean"
   ) {
 
+    /*
+     * Analyze 없이 Clean 눌렀을 경우 fallback.
+     */
+
     if (
-      analyzedRootIds.length ===
-        0
+      analyzedRootIds.length === 0
     ) {
-
       analyzedRootIds =
-
         [
           ...figma.currentPage.selection
         ]
-
           .filter(
             node =>
-
               isAlive(node) &&
-
-              isSupportedRoot(
-                node
-              )
+              isSupportedRoot(node)
           )
-
           .map(
             safeId
           )
-
           .filter(
             Boolean
           );
@@ -8391,26 +6386,21 @@ async msg => {
 
 
     if (
-      roots.length ===
-        0
+      roots.length === 0
     ) {
-
       figma.ui.postMessage({
-
-        type:
-          "error",
+        type: "error",
 
         message:
           "Analyze했던 Screen을 찾을 수 없습니다. Screen을 다시 선택한 뒤 Analyze Screen을 실행해주세요."
       });
-
 
       return;
     }
 
 
     /* =====================================================
-       OPTIONS
+       UI OPTIONS
     ===================================================== */
 
     approvedGarbageIds =
@@ -8436,129 +6426,78 @@ async msg => {
 
 
     figma.ui.postMessage({
-
-      type:
-        "processing"
+      type: "processing"
     });
 
 
-    const resultRoots =
-      [];
+    const resultRoots = [];
 
 
     const total = {
-
       screens:
         roots.length,
 
-      committed:
-        0,
+      committed: 0,
+      rolledBack: 0,
 
-      rolledBack:
-        0,
+      detachedInstances: 0,
+      rejectedInstances: 0,
 
-      detachedInstances:
-        0,
+      removedGarbage: 0,
+      protectedGarbage: 0,
 
-      rejectedInstances:
-        0,
+      removedContainers: 0,
+      movedLayers: 0,
 
-      removedGarbage:
-        0,
+      flattenedContainers: 0,
+      flattenRejected: 0,
 
-      protectedGarbage:
-        0,
+      fastGarbage: 0,
+      fastFlatten: 0,
 
-      removedContainers:
-        0,
+      screenshotBaked: 0,
+      screenshotRejected: 0,
 
-      movedLayers:
-        0,
+      rootConverted: 0,
+      rootConversionRejected: 0,
 
-      flattenedContainers:
-        0,
+      convertedTexts: 0,
+      convertedFontSegments: 0,
+      failedFontConversions: 0,
 
-      flattenRejected:
-        0,
+      renamedLayers: 0,
+      renameSkipped: 0,
 
-      fastGarbage:
-        0,
+      orderChanged: 0,
+      orderRejected: 0,
 
-      fastFlatten:
-        0,
+      preservedAreas: 0,
+      visualShells: 0,
+      bakedAreas: 0,
 
-      screenshotBaked:
-        0,
+      finalLayers: 0,
 
-      screenshotRejected:
-        0,
+      treeScans: 0,
+      visualBatchChecks: 0,
+      binarySplits: 0,
 
-      rootConverted:
-        0,
-
-      rootConversionRejected:
-        0,
-
-      convertedTexts:
-        0,
-
-      convertedFontSegments:
-        0,
-
-      failedFontConversions:
-        0,
-
-      renamedLayers:
-        0,
-
-      renameSkipped:
-        0,
-
-      orderChanged:
-        0,
-
-      orderRejected:
-        0,
-
-      preservedAreas:
-        0,
-
-      visualShells:
-        0,
-
-      bakedAreas:
-        0,
-
-      finalLayers:
-        0,
-
-      treeScans:
-        0,
-
-      visualBatchChecks:
-        0,
-
-      binarySplits:
-        0,
-
-      report:
-        [],
-
-      failureReasons:
-        []
+      report: [],
+      failureReasons: []
     };
 
 
     /* =====================================================
-       PROCESS ROOTS
+       ROOTS
     ===================================================== */
 
     for (
       const root of roots
     ) {
+      const originalName =
+        safeName(root);
+
 
       try {
-
         const processResult =
           await processRoot(
             root
@@ -8566,14 +6505,11 @@ async msg => {
 
 
         if (
-
           processResult.root &&
-
           isAlive(
             processResult.root
           )
         ) {
-
           resultRoots.push(
             processResult.root
           );
@@ -8583,22 +6519,17 @@ async msg => {
         if (
           processResult.success
         ) {
-
           total.committed++;
 
         } else {
-
           total.rolledBack++;
-
 
           if (
             processResult.fatalReason
           ) {
-
             total.failureReasons.push({
-
               screen:
-                safeName(root),
+                originalName,
 
               reason:
                 processResult.fatalReason
@@ -8607,83 +6538,65 @@ async msg => {
         }
 
 
+        const stats =
+          processResult.stats;
+
+
         for (
           const key of
-          Object.keys(
-            processResult.stats
-          )
+          Object.keys(stats)
         ) {
-
           if (
-            key ===
-            "report"
+            key === "report"
           ) {
-
             total.report.push(
-
-              ...processResult
-                .stats
-                .report
+              ...stats.report
             );
-
 
             continue;
           }
 
 
           if (
-
             key in total &&
-
             typeof total[key] ===
+              "number" &&
+            typeof stats[key] ===
               "number"
           ) {
-
             total[key] +=
-              processResult
-                .stats[key];
+              stats[key];
           }
         }
 
       } catch (error) {
-
         total.rolledBack++;
 
 
         total.failureReasons.push({
-
           screen:
-            safeName(root),
+            originalName,
 
           reason:
-
             error &&
             error.message
-
               ? error.message
-
               : String(error)
         });
 
 
-        if (
-          isAlive(root)
-        ) {
-
-          resultRoots.push(
-            root
-          );
+        if (isAlive(root)) {
+          resultRoots.push(root);
         }
       }
     }
 
 
     /* =====================================================
-       FINAL SELECTION
+       SELECT RESULT
     ===================================================== */
 
     const aliveRoots =
-
       resultRoots.filter(
         isAlive
       );
@@ -8692,7 +6605,6 @@ async msg => {
     if (
       aliveRoots.length
     ) {
-
       figma.currentPage.selection =
         aliveRoots;
 
@@ -8703,13 +6615,10 @@ async msg => {
 
 
       analyzedRootIds =
-
         aliveRoots
-
           .map(
             safeId
           )
-
           .filter(
             Boolean
           );
@@ -8717,154 +6626,131 @@ async msg => {
 
 
     /* =====================================================
-       UI RESULT
+       COMPLETE
     ===================================================== */
 
     figma.ui.postMessage({
-
-      type:
-        "complete",
-
-      result:
-        total
+      type: "complete",
+      result: total
     });
 
 
     /* =====================================================
-       CONSOLE REPORT
+       PERFORMANCE LOG
     ===================================================== */
 
     console.log(
       "========================================"
     );
-
 
     console.log(
       "SCREEN LAYER CLEANER"
     );
 
-
     console.log(
       "========================================"
     );
 
+    console.log(
+      "Committed:",
+      total.committed
+    );
+
+    console.log(
+      "Rolled Back:",
+      total.rolledBack
+    );
 
     console.log(
       "Tree Scans:",
       total.treeScans
     );
 
-
     console.log(
       "Visual Batch Checks:",
       total.visualBatchChecks
     );
-
 
     console.log(
       "Binary Splits:",
       total.binarySplits
     );
 
-
     console.log(
       "Fast Garbage:",
       total.fastGarbage
     );
-
 
     console.log(
       "Deleted Garbage:",
       total.removedGarbage
     );
 
-
     console.log(
-      "Fast Flatten:",
-      total.fastFlatten
-    );
-
-
-    console.log(
-      "Flattened:",
-      total.flattenedContainers
-    );
-
-
-    console.log(
-      "Detached Instances:",
+      "Detached Instance:",
       total.detachedInstances
     );
 
-
     console.log(
-      "Preserved Instances:",
+      "Rejected Instance:",
       total.rejectedInstances
     );
-
 
     console.log(
       "Screenshot Bake:",
       total.screenshotBaked
     );
 
-
     console.log(
-      "Renamed Layers:",
-      total.renamedLayers
+      "Fast Flatten:",
+      total.fastFlatten
     );
 
-
     console.log(
-      "Rename Containers:",
-      renameContainers
+      "Flattened:",
+      total.flattenedContainers
     );
 
-
     console.log(
-      "Text → Hyphen:",
-      renameTextToHyphen
-    );
-
-
-    console.log(
-      "Font → Inter:",
-      convertFontToInter
-    );
-
-
-    console.log(
-      "Converted Text:",
+      "Inter Text:",
       total.convertedTexts
     );
 
-
     console.log(
-      "Converted Font Segments:",
+      "Inter Segments:",
       total.convertedFontSegments
     );
 
-
     console.log(
-      "Font Conversion Failed:",
+      "Font Failures:",
       total.failedFontConversions
     );
 
+    console.log(
+      "Renamed:",
+      total.renamedLayers
+    );
 
     console.log(
-      "Layer Order:",
+      "Order:",
       total.orderChanged
+    );
+
+    console.log(
+      "Options:",
+      {
+        convertFontToInter,
+        renameTextToHyphen,
+        renameContainers
+      }
     );
 
 
     try {
-
       console.table(
         total.report
       );
-
     } catch (_) {
-
       console.log(
         total.report
       );
@@ -8874,34 +6760,26 @@ async msg => {
     if (
       total.failureReasons.length
     ) {
-
       console.error(
-
         "Fatal Failures:",
-
         total.failureReasons
       );
     }
 
 
     /* =====================================================
-       NOTIFICATION
+       NOTIFY
     ===================================================== */
 
     if (
-      total.rolledBack ===
-        0
+      total.rolledBack === 0
     ) {
-
       figma.notify(
-
-        `Cleanup 완료 · Garbage ${total.removedGarbage} · Flatten ${total.flattenedContainers} · Inter ${total.convertedTexts} · Rename ${total.renamedLayers}`
+        `Cleanup 완료 · Garbage ${total.removedGarbage} · Detach ${total.detachedInstances} · Flatten ${total.flattenedContainers} · Inter ${total.convertedTexts}`
       );
 
     } else {
-
       figma.notify(
-
         `Cleanup 완료 · ${total.committed}개 적용 / ${total.rolledBack}개 원본 유지`
       );
     }
