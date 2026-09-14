@@ -35,7 +35,7 @@ body {
 
 
 .header {
-  margin-bottom: 20px;
+  margin-bottom: 18px;
 }
 
 
@@ -44,6 +44,7 @@ body {
   margin: 0 0 5px;
 
   font-size: 18px;
+
   font-weight: 700;
 }
 
@@ -52,26 +53,27 @@ body {
 
   margin: 0;
 
-  color:
-    var(--figma-color-text-secondary);
-
   font-size: 12px;
 
   line-height: 1.5;
+
+  color:
+    var(--figma-color-text-secondary);
 }
 
 
-/* ================================
-   Rule Card
-================================ */
+/* =====================================================
+   Card
+===================================================== */
 
 .card {
 
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 
   padding: 14px;
 
-  border: 1px solid
+  border:
+    1px solid
     var(--figma-color-border);
 
   border-radius: 9px;
@@ -85,12 +87,11 @@ body {
 
   display: flex;
 
-  justify-content:
-    space-between;
-
   align-items: center;
 
-  min-height: 26px;
+  justify-content: space-between;
+
+  min-height: 27px;
 
   font-size: 12px;
 }
@@ -109,11 +110,21 @@ body {
 }
 
 
-/* ================================
-   Button
-================================ */
+/* =====================================================
+   Buttons
+===================================================== */
 
 button {
+
+  border: none;
+
+  font-family: inherit;
+
+  cursor: pointer;
+}
+
+
+.main-button {
 
   width: 100%;
 
@@ -123,25 +134,18 @@ button {
 
   border-radius: 8px;
 
-  border: none;
-
   font-size: 13px;
 
   font-weight: 600;
-
-  cursor: pointer;
-
-  transition:
-    opacity 0.15s;
 }
 
 
-button:hover {
+.main-button:hover {
   opacity: 0.88;
 }
 
 
-button:disabled {
+.main-button:disabled {
 
   opacity: 0.45;
 
@@ -151,13 +155,14 @@ button:disabled {
 
 .secondary {
 
-  color:
-    var(--figma-color-text);
-
   background:
     var(--figma-color-bg-secondary);
 
-  border: 1px solid
+  color:
+    var(--figma-color-text);
+
+  border:
+    1px solid
     var(--figma-color-border);
 }
 
@@ -172,9 +177,9 @@ button:disabled {
 }
 
 
-/* ================================
+/* =====================================================
    Result
-================================ */
+===================================================== */
 
 #result {
 
@@ -184,18 +189,17 @@ button:disabled {
 
   padding: 13px;
 
+  max-height: 230px;
+
+  overflow-y: auto;
+
   border-radius: 8px;
+
+  white-space: pre-wrap;
 
   font-size: 12px;
 
-  line-height: 1.65;
-
-  white-space:
-    pre-wrap;
-
-  max-height: 220px;
-
-  overflow-y: auto;
+  line-height: 1.6;
 }
 
 
@@ -235,20 +239,294 @@ button:disabled {
 }
 
 
-/* ================================
-   Information
-================================ */
+/* =====================================================
+   Garbage
+===================================================== */
 
-.note {
+#garbageSection {
 
-  margin-top: 17px;
+  margin-top: 10px;
+
+  margin-bottom: 12px;
+}
+
+
+.garbage-toggle {
+
+  display: none;
+
+  width: 100%;
+
+  min-height: 44px;
+
+  padding: 0 12px;
+
+  align-items: center;
+
+  justify-content: space-between;
+
+  border:
+    1px solid
+    var(--figma-color-border);
+
+  border-radius: 8px;
+
+  background:
+    var(--figma-color-bg-secondary);
+
+  color:
+    var(--figma-color-text);
+
+  font-size: 12px;
+
+  font-weight: 600;
+}
+
+
+.garbage-toggle:hover {
+
+  background:
+    var(--figma-color-bg-hover);
+}
+
+
+.garbage-toggle-left {
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 7px;
+}
+
+
+.garbage-count {
+
+  display: flex;
+
+  align-items: center;
+
+  justify-content: center;
+
+  min-width: 22px;
+
+  height: 20px;
+
+  padding: 0 6px;
+
+  border-radius: 10px;
+
+  background:
+    var(--figma-color-bg-brand);
+
+  color:
+    var(--figma-color-text-onbrand);
+
+  font-size: 10px;
+}
+
+
+.garbage-list {
+
+  display: none;
+
+  margin-top: 7px;
+
+  max-height: 280px;
+
+  overflow-y: auto;
+
+  border:
+    1px solid
+    var(--figma-color-border);
+
+  border-radius: 8px;
+}
+
+
+.garbage-list.open {
+  display: block;
+}
+
+
+.garbage-actions {
+
+  position: sticky;
+
+  top: 0;
+
+  z-index: 5;
+
+  display: flex;
+
+  align-items: center;
+
+  justify-content: space-between;
+
+  padding: 9px 10px;
+
+  background:
+    var(--figma-color-bg-secondary);
+
+  border-bottom:
+    1px solid
+    var(--figma-color-border);
+
+  font-size: 10px;
+}
+
+
+.garbage-action-buttons {
+
+  display: flex;
+
+  gap: 3px;
+}
+
+
+.small-action {
+
+  padding: 4px 6px;
+
+  border-radius: 4px;
+
+  background: transparent;
+
+  color:
+    var(--figma-color-text-brand);
+
+  font-size: 10px;
+}
+
+
+.small-action:hover {
+
+  background:
+    var(--figma-color-bg-hover);
+}
+
+
+.garbage-item {
+
+  display: flex;
+
+  align-items: flex-start;
+
+  gap: 8px;
+
+  padding: 10px;
+
+  border-bottom:
+    1px solid
+    var(--figma-color-border);
+}
+
+
+.garbage-item:last-child {
+
+  border-bottom: none;
+}
+
+
+.garbage-check {
+
+  margin-top: 3px;
+}
+
+
+.garbage-info {
+
+  flex: 1;
+
+  min-width: 0;
+}
+
+
+.garbage-name {
+
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+
+  white-space: nowrap;
+
+  font-size: 12px;
+
+  font-weight: 600;
+}
+
+
+.garbage-meta {
+
+  margin-top: 3px;
+
+  font-size: 10px;
+
+  color:
+    var(--figma-color-text-secondary);
+}
+
+
+.garbage-path {
+
+  margin-top: 3px;
+
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+
+  white-space: nowrap;
+
+  font-size: 9px;
 
   color:
     var(--figma-color-text-tertiary);
+}
+
+
+.layer-view {
+
+  flex-shrink: 0;
+
+  padding: 5px 8px;
+
+  border:
+    1px solid
+    var(--figma-color-border);
+
+  border-radius: 5px;
+
+  background:
+    var(--figma-color-bg-tertiary);
+
+  color:
+    var(--figma-color-text);
+
+  font-size: 10px;
+}
+
+
+.layer-view:hover {
+
+  background:
+    var(--figma-color-bg-hover);
+}
+
+
+/* =====================================================
+   Note
+===================================================== */
+
+.note {
+
+  margin-top: 16px;
 
   font-size: 11px;
 
   line-height: 1.6;
+
+  color:
+    var(--figma-color-text-tertiary);
 }
 
 
@@ -273,8 +551,8 @@ button:disabled {
   </h1>
 
   <p class="subtitle">
-    화면의 Visual을 유지하면서
-    내부 구조를 1 Depth로 정리합니다.
+    화면 구조를 정리하고
+    Text Font를 Inter로 통일합니다.
   </p>
 
 </div>
@@ -283,28 +561,33 @@ button:disabled {
 <div class="card">
 
   <div class="row">
+
     <span class="label">
-      Hidden
+      Garbage
     </span>
 
     <span class="value">
-      Delete
+      Review & Delete
     </span>
+
   </div>
 
 
   <div class="row">
+
     <span class="label">
-      Frame / Auto Layout
+      Layer Depth
     </span>
 
     <span class="value">
-      Flatten
+      1 Depth
     </span>
+
   </div>
 
 
   <div class="row">
+
     <span class="label">
       Instance
     </span>
@@ -312,10 +595,25 @@ button:disabled {
     <span class="value">
       Detach
     </span>
+
   </div>
 
 
   <div class="row">
+
+    <span class="label">
+      Frame / Auto Layout
+    </span>
+
+    <span class="value">
+      Flatten
+    </span>
+
+  </div>
+
+
+  <div class="row">
+
     <span class="label">
       Clip / Mask
     </span>
@@ -323,32 +621,51 @@ button:disabled {
     <span class="value">
       Visual Bake
     </span>
+
   </div>
 
 
   <div class="row">
+
     <span class="label">
-      Text
+      Typeface
+    </span>
+
+    <span class="value">
+      Inter
+    </span>
+
+  </div>
+
+
+  <div class="row">
+
+    <span class="label">
+      Text Layer
     </span>
 
     <span class="value">
       -
     </span>
+
   </div>
 
 
   <div class="row">
+
     <span class="label">
-      Vector / Icon
+      Icon
     </span>
 
     <span class="value">
       icon
     </span>
+
   </div>
 
 
   <div class="row">
+
     <span class="label">
       Line
     </span>
@@ -356,10 +673,12 @@ button:disabled {
     <span class="value">
       line
     </span>
+
   </div>
 
 
   <div class="row">
+
     <span class="label">
       Rectangle
     </span>
@@ -367,17 +686,7 @@ button:disabled {
     <span class="value">
       shape
     </span>
-  </div>
 
-
-  <div class="row">
-    <span class="label">
-      Image
-    </span>
-
-    <span class="value">
-      image
-    </span>
   </div>
 
 </div>
@@ -385,46 +694,101 @@ button:disabled {
 
 <button
   id="analyze"
-  class="secondary"
+  class="main-button secondary"
 >
   Analyze Screen
-</button>
-
-
-<button
-  id="clean"
-  class="primary"
->
-  Clean & Flatten
 </button>
 
 
 <div id="result"></div>
 
 
+<div id="garbageSection">
+
+  <button
+    id="garbageToggle"
+    class="garbage-toggle"
+  >
+
+    <div class="garbage-toggle-left">
+
+      <span>
+        Garbage Candidates
+      </span>
+
+      <span
+        id="garbageCount"
+        class="garbage-count"
+      >
+        0
+      </span>
+
+    </div>
+
+
+    <span id="garbageArrow">
+      ▼
+    </span>
+
+  </button>
+
+
+  <div
+    id="garbageList"
+    class="garbage-list"
+  ></div>
+
+</div>
+
+
+<button
+  id="clean"
+  class="main-button primary"
+>
+  Clean & Flatten
+</button>
+
+
 <div class="note">
 
   <strong>
-    Visual Protection
+    Font Conversion
   </strong>
 
   <br>
 
-  Mask, Clip Content, Blend Mode처럼
-  구조 제거 시 화면이 달라질 수 있는 영역은
-  자동으로 하나의 Visual Layer로 변환합니다.
+  모든 일반 Text Layer의 Font Family를
+  Inter로 변경합니다.
+
+  <br>
+
+  기존 Bold, Medium, Light, Italic 등의
+  스타일은 가능한 한 대응되는
+  Inter 스타일로 유지합니다.
 
   <br><br>
 
-  실제 Text 내용은 변경하지 않으며,
-  일반 Text Layer는 이름만
-  <strong>-</strong>
-  로 변경됩니다.
+  <strong>
+    Garbage Protection
+  </strong>
+
+  <br>
+
+  Analyze 후 Garbage Candidates를 펼쳐
+  삭제 대상을 직접 확인할 수 있습니다.
+
+  <br>
+
+  체크를 해제한 Layer는 삭제하지 않습니다.
 
 </div>
 
 
 <script>
+
+/* =====================================================
+   Elements
+===================================================== */
 
 const analyzeButton =
   document.getElementById(
@@ -444,14 +808,81 @@ const result =
   );
 
 
+const garbageToggle =
+  document.getElementById(
+    "garbageToggle"
+  );
+
+
+const garbageList =
+  document.getElementById(
+    "garbageList"
+  );
+
+
+const garbageCount =
+  document.getElementById(
+    "garbageCount"
+  );
+
+
+const garbageArrow =
+  document.getElementById(
+    "garbageArrow"
+  );
+
+
+let garbageItems =
+  [];
+
+
+/* =====================================================
+   Helpers
+===================================================== */
+
+function escapeHtml(
+  value
+) {
+
+  return String(value)
+
+    .replaceAll(
+      "&",
+      "&amp;"
+    )
+
+    .replaceAll(
+      "<",
+      "&lt;"
+    )
+
+    .replaceAll(
+      ">",
+      "&gt;"
+    )
+
+    .replaceAll(
+      '"',
+      "&quot;"
+    )
+
+    .replaceAll(
+      "'",
+      "&#039;"
+    );
+}
+
+
 function clearResult() {
 
-  result.className = "";
+  result.className =
+    "";
 
   result.style.display =
     "none";
 
-  result.textContent = "";
+  result.textContent =
+    "";
 }
 
 
@@ -467,22 +898,303 @@ function setLoading(
 }
 
 
-/* =================================
+/* =====================================================
+   Garbage Toggle
+===================================================== */
+
+garbageToggle.onclick =
+() => {
+
+  garbageList
+    .classList
+    .toggle(
+      "open"
+    );
+
+
+  const opened =
+    garbageList
+      .classList
+      .contains(
+        "open"
+      );
+
+
+  garbageArrow.textContent =
+    opened
+      ? "▲"
+      : "▼";
+};
+
+
+/* =====================================================
+   Garbage Renderer
+===================================================== */
+
+function renderGarbageList(
+  items
+) {
+
+  garbageItems =
+    items;
+
+
+  garbageCount.textContent =
+    items.length;
+
+
+  if (
+    items.length === 0
+  ) {
+
+    garbageToggle.style.display =
+      "none";
+
+
+    garbageList.classList.remove(
+      "open"
+    );
+
+
+    garbageList.innerHTML =
+      "";
+
+
+    return;
+  }
+
+
+  garbageToggle.style.display =
+    "flex";
+
+
+  garbageList.innerHTML =
+    "";
+
+
+  /*
+   * Toolbar
+   */
+  const actions =
+    document.createElement(
+      "div"
+    );
+
+
+  actions.className =
+    "garbage-actions";
+
+
+  actions.innerHTML = `
+
+    <span>
+      삭제 후보 ${items.length}개
+    </span>
+
+    <div class="garbage-action-buttons">
+
+      <button
+        id="selectAllGarbage"
+        class="small-action"
+      >
+        전체 선택
+      </button>
+
+      <button
+        id="deselectAllGarbage"
+        class="small-action"
+      >
+        전체 해제
+      </button>
+
+    </div>
+  `;
+
+
+  garbageList.appendChild(
+    actions
+  );
+
+
+  /*
+   * Items
+   */
+  for (
+    const item of items
+  ) {
+
+    const element =
+      document.createElement(
+        "div"
+      );
+
+
+    element.className =
+      "garbage-item";
+
+
+    element.innerHTML = `
+
+      <input
+        class="garbage-check"
+        type="checkbox"
+        data-node-id="${escapeHtml(item.id)}"
+        checked
+      />
+
+
+      <div class="garbage-info">
+
+        <div class="garbage-name">
+          ${escapeHtml(item.name)}
+        </div>
+
+
+        <div class="garbage-meta">
+          ${escapeHtml(item.type)}
+          ·
+          ${escapeHtml(item.reason)}
+        </div>
+
+
+        <div
+          class="garbage-path"
+          title="${escapeHtml(item.path)}"
+        >
+          ${escapeHtml(item.path)}
+        </div>
+
+      </div>
+
+
+      <button
+        class="layer-view"
+        data-select-node="${escapeHtml(item.id)}"
+      >
+        보기
+      </button>
+    `;
+
+
+    garbageList.appendChild(
+      element
+    );
+  }
+
+
+  /*
+   * Layer Select
+   */
+  garbageList
+    .querySelectorAll(
+      "[data-select-node]"
+    )
+    .forEach(
+      button => {
+
+        button.onclick =
+        event => {
+
+          /*
+           * Toggle 이벤트 등과
+           * 겹치지 않도록
+           */
+          event.stopPropagation();
+
+
+          parent.postMessage(
+            {
+              pluginMessage: {
+
+                type:
+                  "select-layer",
+
+                nodeId:
+                  button.dataset
+                    .selectNode
+              }
+            },
+            "*"
+          );
+        };
+      }
+    );
+
+
+  /*
+   * Select All
+   */
+  document
+    .getElementById(
+      "selectAllGarbage"
+    )
+    .onclick =
+    event => {
+
+      event.stopPropagation();
+
+
+      garbageList
+        .querySelectorAll(
+          ".garbage-check"
+        )
+        .forEach(
+          check => {
+
+            check.checked =
+              true;
+          }
+        );
+    };
+
+
+  /*
+   * Deselect All
+   */
+  document
+    .getElementById(
+      "deselectAllGarbage"
+    )
+    .onclick =
+    event => {
+
+      event.stopPropagation();
+
+
+      garbageList
+        .querySelectorAll(
+          ".garbage-check"
+        )
+        .forEach(
+          check => {
+
+            check.checked =
+              false;
+          }
+        );
+    };
+}
+
+
+/* =====================================================
    Analyze
-================================= */
+===================================================== */
 
 analyzeButton.onclick =
 () => {
 
   clearResult();
 
-  setLoading(true);
+  setLoading(
+    true
+  );
 
 
   parent.postMessage(
     {
       pluginMessage: {
-        type: "analyze"
+        type:
+          "analyze"
       }
     },
     "*"
@@ -490,30 +1202,67 @@ analyzeButton.onclick =
 };
 
 
-/* =================================
+/* =====================================================
    Clean
-================================= */
+===================================================== */
 
 cleanButton.onclick =
 () => {
 
   clearResult();
 
-  setLoading(true);
+
+  /*
+   * 체크된 Garbage ID
+   */
+  const garbageIds =
+    [];
+
+
+  document
+    .querySelectorAll(
+      ".garbage-check:checked"
+    )
+    .forEach(
+      check => {
+
+        garbageIds.push(
+          check.dataset.nodeId
+        );
+      }
+    );
+
+
+  setLoading(
+    true
+  );
 
 
   result.className =
     "processing";
 
+
   result.textContent =
-    "Cleaning Screen...\n\n" +
-    "Instance, Mask, Clip Content 및 Layer 구조를 분석하고 있습니다.";
+`Cleaning Screen...
+
+선택된 Garbage
+${garbageIds.length}개
+
+Text Font
+→ Inter
+
+Layer 구조를 정리하고 있습니다.`;
+
 
 
   parent.postMessage(
     {
       pluginMessage: {
-        type: "clean"
+
+        type:
+          "clean",
+
+        garbageIds
       }
     },
     "*"
@@ -521,12 +1270,12 @@ cleanButton.onclick =
 };
 
 
-/* =================================
+/* =====================================================
    Figma → UI
-================================= */
+===================================================== */
 
 onmessage =
-(event) => {
+event => {
 
   const msg =
     event.data.pluginMessage;
@@ -537,29 +1286,36 @@ onmessage =
   }
 
 
-  /* -------------------------------
+  /* -------------------------------------------------
      Processing
-  -------------------------------- */
+  ------------------------------------------------- */
 
   if (
-    msg.type === "processing"
+    msg.type ===
+    "processing"
   ) {
 
-    setLoading(true);
+    setLoading(
+      true
+    );
+
 
     return;
   }
 
 
-  /* -------------------------------
+  /* -------------------------------------------------
      Error
-  -------------------------------- */
+  ------------------------------------------------- */
 
   if (
-    msg.type === "error"
+    msg.type ===
+    "error"
   ) {
 
-    setLoading(false);
+    setLoading(
+      false
+    );
 
 
     result.className =
@@ -574,22 +1330,31 @@ onmessage =
   }
 
 
-  /* -------------------------------
-     Analyze
-  -------------------------------- */
+  /* -------------------------------------------------
+     Analysis
+  ------------------------------------------------- */
 
   if (
-    msg.type === "analysis"
+    msg.type ===
+    "analysis"
   ) {
 
-    setLoading(false);
+    setLoading(
+      false
+    );
 
 
-    let text = "";
+    let text =
+      "";
+
+
+    let allGarbage =
+      [];
 
 
     for (
-      const data of msg.results
+      const data of
+      msg.results
     ) {
 
       text +=
@@ -619,6 +1384,9 @@ ${data.masks}
 Text
 ${data.text}
 
+Non-Inter Text
+${data.nonInterText}
+
 Icon
 ${data.icons}
 
@@ -629,6 +1397,19 @@ Visual Bake Candidate
 ${data.bakeCandidates}
 
 `;
+
+
+      if (
+        Array.isArray(
+          data.garbageItems
+        )
+      ) {
+
+        allGarbage =
+          allGarbage.concat(
+            data.garbageItems
+          );
+      }
     }
 
 
@@ -640,19 +1421,27 @@ ${data.bakeCandidates}
       text.trim();
 
 
+    renderGarbageList(
+      allGarbage
+    );
+
+
     return;
   }
 
 
-  /* -------------------------------
+  /* -------------------------------------------------
      Complete
-  -------------------------------- */
+  ------------------------------------------------- */
 
   if (
-    msg.type === "complete"
+    msg.type ===
+    "complete"
   ) {
 
-    setLoading(false);
+    setLoading(
+      false
+    );
 
 
     const r =
@@ -675,16 +1464,28 @@ ${r.detachedInstances}
 Deleted Garbage
 ${r.removedGarbage}
 
+Protected Garbage
+${r.protectedGarbage}
+
 Removed Container
 ${r.removedContainers}
 
 Flattened Layer
 ${r.movedLayers}
 
+Text → Inter
+${r.convertedTexts}
+
+Font Style Segments
+${r.convertedFontSegments}
+
+Font Conversion Failed
+${r.failedFontConversions}
+
 Visual Shell
 ${r.visualShells}
 
-Mask / Clip Visual Bake
+Mask / Clip Bake
 ${r.bakedAreas}
 
 Preserved Exception
@@ -694,13 +1495,20 @@ Final Layer
 ${r.finalLayers}`;
 
 
+    /*
+     * 이미 구조가 바뀌었으므로
+     * Garbage 상세 리스트 초기화
+     */
+    renderGarbageList(
+      []
+    );
+
+
     return;
   }
-
 };
 
 </script>
-
 
 </body>
 
