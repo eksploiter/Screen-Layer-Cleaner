@@ -7,30 +7,29 @@ figma.showUI(__html__, {
 
 /* =========================================================
    SCREEN LAYER CLEANER
-   SAFE VISUAL-FIRST VERSION
+   VISUAL-FIRST + SMART FLATTEN
+   =========================================================
 
    제1법칙
    ---------------------------------------------------------
-   디자인 화면에 영향을 주지 않는다.
+   디자인 화면 구조/배치에 영향을 주지 않는다.
 
-   우선순위
+   처리 우선순위
    ---------------------------------------------------------
-   1. Visual Preservation
-   2. Garbage Cleanup
-   3. LID Preservation
-   4. Layer Naming
-   5. Safe Flatten
-   6. Layer Ordering
+   1. 체크한 Garbage 실제 삭제
+   2. LID 보호
+   3. 안전한 Frame / Group 적극 Flatten
+   4. 위험한 구조는 Preserve
+   5. Instance는 안전하게 Detach 시도
+   6. Layer Naming
+   7. 안전한 경우 위치순 정렬
 
-   핵심 원칙
+   중요한 변경
    ---------------------------------------------------------
-   - 1 Depth가 가능하면 Flatten
-   - 조금이라도 위험하면 Container 유지
-   - Auto Layout은 구조 변경하지 않음
-   - Mask / Clip / Effect 구조 유지
-   - Screenshot Bake 사용하지 않음
-   - 화면 보존 때문에 Frame/Group이 남는 것은 정상
-   - 개별 Layer 실패가 전체 Screen 실패로 이어지지 않음
+   - 자식을 무조건 Root까지 올리지 않음
+   - Container를 "한 단계씩" Flatten
+   - Auto Layout 경계에서는 멈춤
+   - Hidden Garbage는 체크했다면 실제 삭제
 ========================================================= */
 
 
@@ -42,9 +41,9 @@ let renameTextToHyphen = false;
 let convertFontToInter = false;
 
 let approvedGarbageIds = new Set();
-let approvedGarbagePaths = new Set();
 
 const ROW_TOLERANCE = 8;
+const MAX_FLATTEN_PASSES = 30;
 
 
 /* =========================================================
@@ -68,11 +67,6 @@ function createStats() {
     failedFontConversions: 0,
 
     visualShells: 0,
-
-    /*
-     * 기존 UI 호환용.
-     * 이번 버전에서는 Bake하지 않는다.
-     */
     bakedAreas: 0,
 
     finalLayers: 0
@@ -81,7 +75,7 @@ function createStats() {
 
 
 /* =========================================================
-   SAFE NODE ACCESS
+   SAFE HELPERS
 ========================================================= */
 
 function safeType(node) {
@@ -133,6 +127,29 @@ function isAlive(node) {
 }
 
 
+function childrenOf(node) {
+  if (!isAlive(node)) {
+    return [];
+  }
+
+  try {
+    if (!("children" in node)) {
+      return [];
+    }
+
+    return [...node.children];
+
+  } catch (_) {
+    return [];
+  }
+}
+
+
+function hasChildren(node) {
+  return childrenOf(node).length > 0;
+}
+
+
 function safeAbsoluteTransform(node) {
   try {
     return node.absoluteTransform;
@@ -171,12 +188,11 @@ function safeRemove(node) {
 
   try {
     node.remove();
-
     return true;
 
   } catch (error) {
     console.warn(
-      "Remove skipped:",
+      "Remove failed:",
       safeName(node),
       error
     );
@@ -186,43 +202,12 @@ function safeRemove(node) {
 }
 
 
-function hasChildren(node) {
-  if (!isAlive(node)) {
-    return false;
-  }
-
-  try {
-    return (
-      "children" in node &&
-      node.children != null
-    );
-
-  } catch (_) {
-    return false;
-  }
-}
-
-
-function childrenOf(node) {
-  if (!hasChildren(node)) {
-    return [];
-  }
-
-  try {
-    return [...node.children];
-  } catch (_) {
-    return [];
-  }
-}
-
-
 /* =========================================================
-   NODE TYPES
+   NODE TYPE
 ========================================================= */
 
 function isContainer(node) {
-  const type =
-    safeType(node);
+  const type = safeType(node);
 
   return (
     type === "FRAME" ||
@@ -238,25 +223,44 @@ function isSupportedRoot(node) {
 }
 
 
-function isInsideInstance(node) {
-  let current =
-    safeParent(node);
-
-
-  while (current) {
-    if (
-      safeType(current) ===
-      "INSTANCE"
-    ) {
-      return true;
-    }
-
-    current =
-      safeParent(current);
+function isAutoLayout(node) {
+  if (!isAlive(node)) {
+    return false;
   }
 
+  try {
+    return (
+      "layoutMode" in node &&
+      node.layoutMode !== "NONE"
+    );
 
-  return false;
+  } catch (_) {
+    return false;
+  }
+}
+
+
+function participatesInAutoLayout(node) {
+  const parent =
+    safeParent(node);
+
+  if (
+    !parent ||
+    !isAutoLayout(parent)
+  ) {
+    return false;
+  }
+
+  try {
+    if (
+      "layoutPositioning" in node &&
+      node.layoutPositioning === "ABSOLUTE"
+    ) {
+      return false;
+    }
+  } catch (_) {}
+
+  return true;
 }
 
 
@@ -277,7 +281,6 @@ function multiplyTransform(a, b) {
         a[0][1] * b[1][2] +
         a[0][2]
     ],
-
     [
       a[1][0] * b[0][0] +
         a[1][1] * b[1][0],
@@ -306,7 +309,6 @@ function invertTransform(m) {
     a * d -
     b * c;
 
-
   if (
     Math.abs(det) <
     0.000001
@@ -316,10 +318,8 @@ function invertTransform(m) {
     );
   }
 
-
   const inv =
     1 / det;
-
 
   return [
     [
@@ -327,7 +327,6 @@ function invertTransform(m) {
       -c * inv,
       (c * f - d * e) * inv
     ],
-
     [
       -b * inv,
       a * inv,
@@ -342,10 +341,7 @@ function absoluteToRelative(
   parent
 ) {
   const parentTransform =
-    safeAbsoluteTransform(
-      parent
-    );
-
+    safeAbsoluteTransform(parent);
 
   if (!parentTransform) {
     throw new Error(
@@ -353,112 +349,15 @@ function absoluteToRelative(
     );
   }
 
-
   return multiplyTransform(
-    invertTransform(
-      parentTransform
-    ),
+    invertTransform(parentTransform),
     absoluteTransform
   );
 }
 
 
 /* =========================================================
-   PATH
-========================================================= */
-
-/*
- * Instance Detach 등으로 ID가 달라질 수 있으므로
- * Garbage 선택은 구조 Path도 같이 저장한다.
- */
-
-function buildPathMap(root) {
-  const map =
-    new Map();
-
-
-  function walk(
-    node,
-    path
-  ) {
-    if (!isAlive(node)) {
-      return;
-    }
-
-
-    const id =
-      safeId(node);
-
-
-    if (id) {
-      map.set(
-        id,
-        path
-      );
-    }
-
-
-    const children =
-      childrenOf(node);
-
-
-    for (
-      let i = 0;
-      i < children.length;
-      i++
-    ) {
-      walk(
-        children[i],
-
-        path === ""
-          ? String(i)
-          : `${path}/${i}`
-      );
-    }
-  }
-
-
-  walk(
-    root,
-    ""
-  );
-
-
-  return map;
-}
-
-
-function prepareGarbagePaths(root) {
-  const pathMap =
-    buildPathMap(root);
-
-
-  const result =
-    new Set();
-
-
-  for (
-    const id of
-    approvedGarbageIds
-  ) {
-    const path =
-      pathMap.get(id);
-
-
-    if (
-      path !== undefined
-    ) {
-      result.add(path);
-    }
-  }
-
-
-  return result;
-}
-
-
-/* =========================================================
-   LID PROTECTION
+   LID
 ========================================================= */
 
 function isLidName(name) {
@@ -466,12 +365,10 @@ function isLidName(name) {
     return false;
   }
 
-
   const value =
     String(name)
       .trim()
       .toLowerCase();
-
 
   return (
     value.startsWith("cci_ctn_") ||
@@ -483,61 +380,195 @@ function isLidName(name) {
 
 
 /* =========================================================
-   AUTO LAYOUT
+   GARBAGE
 ========================================================= */
 
-function isAutoLayout(node) {
+function getGarbageReason(node) {
+  if (!isAlive(node)) {
+    return null;
+  }
+
+
+  /*
+   * 명시적 Hidden.
+   */
+  try {
+    if (
+      "visible" in node &&
+      node.visible === false
+    ) {
+      return "Hidden · visible=false";
+    }
+  } catch (_) {}
+
+
+  /*
+   * Opacity 0.
+   */
+  try {
+    if (
+      "opacity" in node &&
+      node.opacity === 0
+    ) {
+      return "Transparent · opacity=0";
+    }
+  } catch (_) {}
+
+
+  /*
+   * Slice.
+   */
+  if (
+    safeType(node) === "SLICE"
+  ) {
+    return "Slice Layer";
+  }
+
+
+  /*
+   * 완전히 렌더 영역이 없는 Container.
+   */
+  if (
+    isContainer(node)
+  ) {
+    const bounds =
+      safeRenderBounds(node);
+
+    if (
+      !bounds ||
+      bounds.width <= 0.01 ||
+      bounds.height <= 0.01
+    ) {
+      return "No Rendered Content";
+    }
+  }
+
+
+  return null;
+}
+
+
+function isSelectedGarbage(node) {
+  const id =
+    safeId(node);
+
+  return (
+    !!id &&
+    approvedGarbageIds.has(id)
+  );
+}
+
+
+/*
+ * 부모 자체가 선택된 Garbage인지 확인.
+ *
+ * 부모가 삭제되면 자식까지 자동으로 삭제되므로
+ * 중복 remove() 방지.
+ */
+function hasSelectedGarbageAncestor(node) {
+  let current =
+    safeParent(node);
+
+  while (current) {
+    const id =
+      safeId(current);
+
+    if (
+      id &&
+      approvedGarbageIds.has(id) &&
+      getGarbageReason(current)
+    ) {
+      return true;
+    }
+
+    current =
+      safeParent(current);
+  }
+
+  return false;
+}
+
+
+/*
+ * 제1법칙과 Garbage 삭제를 같이 만족.
+ *
+ * visible=false
+ * → Figma 화면 렌더에서 이미 제외된 상태
+ * → 체크했다면 삭제 허용.
+ *
+ * opacity=0
+ * → Auto Layout 공간을 차지할 수 있으므로
+ *   Layout 참여 중이면 보호.
+ */
+function canDeleteGarbageSafely(node) {
   if (!isAlive(node)) {
     return false;
   }
 
 
+  /*
+   * Hidden은 삭제.
+   */
   try {
-    return (
-      "layoutMode" in node &&
-      node.layoutMode !== "NONE"
-    );
-
-  } catch (_) {
-    return false;
-  }
-}
-
-
-/*
- * node의 Parent부터 root까지
- * Auto Layout이 하나라도 존재하는지.
- *
- * Auto Layout 내부의 Layer를 밖으로 빼면
- * 위치 / 크기 / spacing이 달라질 수 있으므로
- * Flatten 금지.
- */
-function hasAutoLayoutAncestorUntilRoot(
-  node,
-  root
-) {
-  let current =
-    safeParent(node);
-
-
-  while (current) {
     if (
-      isAutoLayout(current)
+      "visible" in node &&
+      node.visible === false
     ) {
       return true;
     }
+  } catch (_) {}
 
 
+  /*
+   * Slice.
+   */
+  if (
+    safeType(node) === "SLICE"
+  ) {
+    return true;
+  }
+
+
+  /*
+   * Render 자체가 없는 Container.
+   */
+  const reason =
+    getGarbageReason(node);
+
+  if (
+    reason === "No Rendered Content"
+  ) {
     if (
-      current === root
+      participatesInAutoLayout(node)
     ) {
-      break;
+      return false;
     }
 
-
-    current =
-      safeParent(current);
+    return true;
   }
+
+
+  /*
+   * Opacity 0.
+   */
+  try {
+    if (
+      "opacity" in node &&
+      node.opacity === 0
+    ) {
+      /*
+       * Auto Layout item이면
+       * 삭제 시 주변 요소가 이동할 수 있음.
+       */
+      if (
+        participatesInAutoLayout(node)
+      ) {
+        return false;
+      }
+
+      return true;
+    }
+  } catch (_) {}
 
 
   return false;
@@ -545,45 +576,83 @@ function hasAutoLayoutAncestorUntilRoot(
 
 
 /*
- * Auto Layout 안에서 실제 Layout에
- * 참여하는 Layer인지 확인.
+ * 선택된 Garbage 실제 삭제.
+ *
+ * 구조 변경 작업보다 먼저 실행한다.
+ * → Instance Detach 등으로 ID가 바뀌기 전에 삭제.
  */
-function participatesInAutoLayout(node) {
-  const parent =
-    safeParent(node);
+function deleteSelectedGarbage(
+  root,
+  stats
+) {
+  function walk(node) {
+    if (!isAlive(node)) {
+      return;
+    }
 
 
-  if (
-    !parent ||
-    !isAutoLayout(parent)
-  ) {
-    return false;
+    /*
+     * Root 자체는 삭제하지 않음.
+     */
+    if (
+      node !== root &&
+      isSelectedGarbage(node) &&
+      getGarbageReason(node)
+    ) {
+      /*
+       * 부모가 이미 삭제 대상이면
+       * 자식은 따로 처리하지 않음.
+       */
+      if (
+        hasSelectedGarbageAncestor(node)
+      ) {
+        return;
+      }
+
+
+      if (
+        canDeleteGarbageSafely(node)
+      ) {
+        if (
+          safeRemove(node)
+        ) {
+          stats.removedGarbage++;
+          return;
+        }
+      }
+
+
+      stats.protectedGarbage++;
+    }
+
+
+    /*
+     * Node가 살아있을 때만 Child 순회.
+     */
+    if (!isAlive(node)) {
+      return;
+    }
+
+
+    for (
+      const child of
+      childrenOf(node)
+    ) {
+      walk(child);
+    }
   }
 
 
-  try {
-    if (
-      "layoutPositioning" in node &&
-      node.layoutPositioning ===
-        "ABSOLUTE"
-    ) {
-      return false;
-    }
-  } catch (_) {}
-
-
-  return true;
+  walk(root);
 }
 
 
 /* =========================================================
-   PAINT
+   PAINT / VISUAL SAFETY
 ========================================================= */
 
 function hasVisiblePaint(paints) {
-  if (
-    !Array.isArray(paints)
-  ) {
+  if (!Array.isArray(paints)) {
     return false;
   }
 
@@ -596,7 +665,6 @@ function hasVisiblePaint(paints) {
         return false;
       }
 
-
       if (
         typeof paint.opacity ===
           "number" &&
@@ -605,38 +673,9 @@ function hasVisiblePaint(paints) {
         return false;
       }
 
-
       return true;
     }
   );
-}
-
-
-function hasImageFill(node) {
-  if (!isAlive(node)) {
-    return false;
-  }
-
-
-  try {
-    if (
-      !("fills" in node) ||
-      node.fills === figma.mixed ||
-      !Array.isArray(node.fills)
-    ) {
-      return false;
-    }
-
-
-    return node.fills.some(
-      fill =>
-        fill.type === "IMAGE" &&
-        fill.visible !== false
-    );
-
-  } catch (_) {
-    return false;
-  }
 }
 
 
@@ -650,9 +689,7 @@ function hasOwnVisual(node) {
     if (
       "fills" in node &&
       node.fills !== figma.mixed &&
-      hasVisiblePaint(
-        node.fills
-      )
+      hasVisiblePaint(node.fills)
     ) {
       return true;
     }
@@ -663,9 +700,7 @@ function hasOwnVisual(node) {
     if (
       "strokes" in node &&
       node.strokes !== figma.mixed &&
-      hasVisiblePaint(
-        node.strokes
-      )
+      hasVisiblePaint(node.strokes)
     ) {
       return true;
     }
@@ -676,12 +711,29 @@ function hasOwnVisual(node) {
 }
 
 
-function hasVisibleEffects(node) {
-  if (!isAlive(node)) {
+function hasImageFill(node) {
+  try {
+    if (
+      !("fills" in node) ||
+      node.fills === figma.mixed ||
+      !Array.isArray(node.fills)
+    ) {
+      return false;
+    }
+
+    return node.fills.some(
+      fill =>
+        fill.type === "IMAGE" &&
+        fill.visible !== false
+    );
+
+  } catch (_) {
     return false;
   }
+}
 
 
+function hasVisibleEffects(node) {
   try {
     if (
       !("effects" in node) ||
@@ -690,10 +742,23 @@ function hasVisibleEffects(node) {
       return false;
     }
 
-
     return node.effects.some(
       effect =>
         effect.visible !== false
+    );
+
+  } catch (_) {
+    return false;
+  }
+}
+
+
+function hasRotation(node) {
+  try {
+    return (
+      "rotation" in node &&
+      typeof node.rotation === "number" &&
+      Math.abs(node.rotation) > 0.001
     );
 
   } catch (_) {
@@ -715,7 +780,6 @@ function containsMask(node) {
       continue;
     }
 
-
     try {
       if (
         "isMask" in child &&
@@ -732,7 +796,6 @@ function containsMask(node) {
       return true;
     }
   }
-
 
   return false;
 }
@@ -756,28 +819,28 @@ function actuallyClipsChildren(node) {
   }
 
 
-  const bounds =
+  const parentBounds =
     safeBounds(node);
 
 
-  if (!bounds) {
+  if (!parentBounds) {
     return true;
   }
 
 
   const left =
-    bounds.x;
+    parentBounds.x;
 
   const top =
-    bounds.y;
+    parentBounds.y;
 
   const right =
-    bounds.x +
-    bounds.width;
+    parentBounds.x +
+    parentBounds.width;
 
   const bottom =
-    bounds.y +
-    bounds.height;
+    parentBounds.y +
+    parentBounds.height;
 
 
   for (
@@ -799,28 +862,23 @@ function actuallyClipsChildren(node) {
     } catch (_) {}
 
 
-    const childBounds =
+    const bounds =
       safeRenderBounds(child);
 
 
-    if (!childBounds) {
+    if (!bounds) {
       continue;
     }
 
 
     if (
-      childBounds.x <
-        left - 0.5 ||
-
-      childBounds.y <
-        top - 0.5 ||
-
-      childBounds.x +
-        childBounds.width >
+      bounds.x < left - 0.5 ||
+      bounds.y < top - 0.5 ||
+      bounds.x +
+        bounds.width >
         right + 0.5 ||
-
-      childBounds.y +
-        childBounds.height >
+      bounds.y +
+        bounds.height >
         bottom + 0.5
     ) {
       return true;
@@ -833,154 +891,6 @@ function actuallyClipsChildren(node) {
 
 
 /* =========================================================
-   ROTATION / TRANSFORM SAFETY
-========================================================= */
-
-function hasRotation(node) {
-  try {
-    if (
-      "rotation" in node &&
-      typeof node.rotation ===
-        "number"
-    ) {
-      return (
-        Math.abs(
-          node.rotation
-        ) >
-        0.001
-      );
-    }
-  } catch (_) {}
-
-
-  return false;
-}
-
-
-/* =========================================================
-   GARBAGE
-========================================================= */
-
-function getGarbageReason(node) {
-  if (!isAlive(node)) {
-    return null;
-  }
-
-
-  try {
-    if (
-      "visible" in node &&
-      node.visible === false
-    ) {
-      return (
-        "Hidden · visible=false"
-      );
-    }
-  } catch (_) {}
-
-
-  try {
-    if (
-      "opacity" in node &&
-      node.opacity === 0
-    ) {
-      return (
-        "Transparent · opacity=0"
-      );
-    }
-  } catch (_) {}
-
-
-  if (
-    safeType(node) === "SLICE"
-  ) {
-    return "Slice Layer";
-  }
-
-
-  return null;
-}
-
-
-function isSelectedGarbage(
-  node,
-  path
-) {
-  if (
-    getGarbageReason(node) ===
-    null
-  ) {
-    return false;
-  }
-
-
-  const id =
-    safeId(node);
-
-
-  if (
-    id &&
-    approvedGarbageIds.has(id)
-  ) {
-    return true;
-  }
-
-
-  if (
-    path !== undefined &&
-    approvedGarbagePaths.has(path)
-  ) {
-    return true;
-  }
-
-
-  return false;
-}
-
-
-/*
- * Garbage라고 해도 삭제 때문에
- * 화면 배치가 변할 수 있으면 삭제하지 않는다.
-
- * 특히 opacity 0 Layer가 Auto Layout에서
- * spacing을 차지하는 경우.
- */
-function canDeleteGarbageSafely(node) {
-  const reason =
-    getGarbageReason(node);
-
-
-  if (!reason) {
-    return false;
-  }
-
-
-  /*
-   * Slice는 Visual/Layout 영향 없음.
-   */
-  if (
-    safeType(node) === "SLICE"
-  ) {
-    return true;
-  }
-
-
-  /*
-   * Auto Layout에 참여 중이면
-   * 삭제하지 않는다.
-   */
-  if (
-    participatesInAutoLayout(node)
-  ) {
-    return false;
-  }
-
-
-  return true;
-}
-
-
-/* =========================================================
    FONT
 ========================================================= */
 
@@ -988,9 +898,7 @@ const loadedFonts =
   new Set();
 
 
-async function loadFontOnce(
-  fontName
-) {
+async function loadFontOnce(fontName) {
   if (
     !fontName ||
     fontName === figma.mixed
@@ -1022,28 +930,17 @@ async function loadFontOnce(
 
     loadedFonts.add(key);
 
-
     return true;
 
-  } catch (error) {
-    console.warn(
-      "Font load skipped:",
-      fontName.family,
-      fontName.style
-    );
-
-
+  } catch (_) {
     return false;
   }
 }
 
 
-async function ensureTextFontsLoaded(
-  node
-) {
+async function ensureTextFontsLoaded(node) {
   if (
-    safeType(node) !==
-    "TEXT"
+    safeType(node) !== "TEXT"
   ) {
     return true;
   }
@@ -1061,20 +958,17 @@ async function ensureTextFontsLoaded(
     ) {
       if (
         !segment.fontName ||
-        segment.fontName ===
-          figma.mixed
+        segment.fontName === figma.mixed
       ) {
         continue;
       }
 
 
-      const loaded =
-        await loadFontOnce(
+      if (
+        !await loadFontOnce(
           segment.fontName
-        );
-
-
-      if (!loaded) {
+        )
+      ) {
         return false;
       }
     }
@@ -1087,14 +981,12 @@ async function ensureTextFontsLoaded(
 
   try {
     if (
-      node.fontName !==
-      figma.mixed
+      node.fontName !== figma.mixed
     ) {
       return await loadFontOnce(
         node.fontName
       );
     }
-
   } catch (_) {}
 
 
@@ -1110,18 +1002,11 @@ const loadedInterStyles =
   new Set();
 
 
-function mapFontStyleToInter(
-  sourceStyle
-) {
+function mapFontStyleToInter(styleName) {
   const value =
-    String(
-      sourceStyle || ""
-    )
+    String(styleName || "")
       .toLowerCase()
-      .replace(
-        /[_-]/g,
-        " "
-      );
+      .replace(/[_-]/g, " ");
 
 
   const italic =
@@ -1129,7 +1014,7 @@ function mapFontStyleToInter(
     value.includes("oblique");
 
 
-  let style =
+  let weight =
     "Regular";
 
 
@@ -1137,76 +1022,64 @@ function mapFontStyleToInter(
     value.includes("black") ||
     value.includes("heavy")
   ) {
-    style =
-      "Black";
+    weight = "Black";
 
   } else if (
     value.includes("extra bold") ||
     value.includes("extrabold")
   ) {
-    style =
-      "Extra Bold";
+    weight = "Extra Bold";
 
   } else if (
     value.includes("semi bold") ||
     value.includes("semibold")
   ) {
-    style =
-      "Semi Bold";
+    weight = "Semi Bold";
 
   } else if (
     value.includes("bold")
   ) {
-    style =
-      "Bold";
+    weight = "Bold";
 
   } else if (
     value.includes("medium")
   ) {
-    style =
-      "Medium";
+    weight = "Medium";
 
   } else if (
     value.includes("extra light") ||
     value.includes("extralight")
   ) {
-    style =
-      "Extra Light";
+    weight = "Extra Light";
 
   } else if (
     value.includes("light")
   ) {
-    style =
-      "Light";
+    weight = "Light";
 
   } else if (
     value.includes("thin")
   ) {
-    style =
-      "Thin";
+    weight = "Thin";
   }
 
 
   if (italic) {
     return (
-      style === "Regular"
+      weight === "Regular"
         ? "Italic"
-        : `${style} Italic`
+        : `${weight} Italic`
     );
   }
 
 
-  return style;
+  return weight;
 }
 
 
-async function loadInterStyle(
-  style
-) {
+async function loadInterStyle(style) {
   if (
-    loadedInterStyles.has(
-      style
-    )
+    loadedInterStyles.has(style)
   ) {
     return style;
   }
@@ -1220,11 +1093,7 @@ async function loadInterStyle(
       style
     });
 
-
-    loadedInterStyles.add(
-      style
-    );
-
+    loadedInterStyles.add(style);
 
     return style;
 
@@ -1240,11 +1109,9 @@ async function loadInterStyle(
         "Regular"
     });
 
-
     loadedInterStyles.add(
       "Regular"
     );
-
 
     return "Regular";
 
@@ -1254,49 +1121,19 @@ async function loadInterStyle(
 }
 
 
-/*
- * Inter 변환은 구조와 위치를
- * 움직이지 않는 경우에만 실행.
-
- * Auto Layout 안이라고 해서 Font 변환 자체를
- * 막지는 않지만, Text 위치는 절대 변경하지 않는다.
- */
-async function convertTextToInter(
-  node
-) {
+async function convertTextToInter(node) {
   if (
-    safeType(node) !==
-    "TEXT"
+    safeType(node) !== "TEXT"
   ) {
     return 0;
   }
 
 
-  const fontsReady =
-    await ensureTextFontsLoaded(
-      node
-    );
-
-
-  if (!fontsReady) {
+  if (
+    !await ensureTextFontsLoaded(node)
+  ) {
     return 0;
   }
-
-
-  /*
-   * 기존 위치 저장.
-   *
-   * Font 변경 후 Auto Resize 때문에
-   * x/y가 달라지는 경우 방지.
-   */
-  let originalX = null;
-  let originalY = null;
-
-
-  try {
-    originalX = node.x;
-    originalY = node.y;
-  } catch (_) {}
 
 
   try {
@@ -1306,29 +1143,28 @@ async function convertTextToInter(
       );
 
 
-    let converted = 0;
+    let count = 0;
 
 
     for (
       const segment of segments
     ) {
-      const sourceStyle =
+      const oldStyle =
         segment.fontName &&
-        segment.fontName !==
-          figma.mixed
+        segment.fontName !== figma.mixed
           ? segment.fontName.style
           : "Regular";
 
 
-      const targetStyle =
+      const target =
         await loadInterStyle(
           mapFontStyleToInter(
-            sourceStyle
+            oldStyle
           )
         );
 
 
-      if (!targetStyle) {
+      if (!target) {
         continue;
       }
 
@@ -1341,38 +1177,16 @@ async function convertTextToInter(
             "Inter",
 
           style:
-            targetStyle
+            target
         }
       );
 
 
-      converted++;
+      count++;
     }
 
 
-    /*
-     * Auto Layout이 아닌 경우만
-     * x/y 복원.
-     *
-     * Auto Layout Child는 x/y 직접 설정이
-     * 레이아웃에 영향을 줄 수 있으므로 제외.
-     */
-    if (
-      !participatesInAutoLayout(node) &&
-      originalX !== null &&
-      originalY !== null
-    ) {
-      try {
-        node.x =
-          originalX;
-
-        node.y =
-          originalY;
-      } catch (_) {}
-    }
-
-
-    return converted;
+    return count;
 
   } catch (error) {
     console.warn(
@@ -1380,7 +1194,6 @@ async function convertTextToInter(
       safeName(node),
       error
     );
-
 
     return 0;
   }
@@ -1394,7 +1207,6 @@ async function convertTextToInter(
 function looksLikeIcon(node) {
   const type =
     safeType(node);
-
 
   const name =
     safeName(node)
@@ -1431,8 +1243,7 @@ function looksLikeScreenshot(
   root
 ) {
   if (
-    safeType(node) !==
-      "RECTANGLE" ||
+    safeType(node) !== "RECTANGLE" ||
     !hasImageFill(node)
   ) {
     return false;
@@ -1464,12 +1275,8 @@ function looksLikeScreenshot(
 
 
     return (
-      node.width /
-        root.width >=
-        0.7 &&
-      node.height /
-        root.height >=
-        0.5
+      node.width / root.width >= 0.7 &&
+      node.height / root.height >= 0.5
     );
 
   } catch (_) {
@@ -1480,21 +1287,20 @@ function looksLikeScreenshot(
 
 function looksLikeIPhoneFrame(node) {
   if (
-    safeType(node) !==
-    "FRAME"
+    safeType(node) !== "FRAME"
   ) {
     return false;
   }
 
 
-  const name =
+  const value =
     safeName(node)
       .toLowerCase();
 
 
   return (
-    name.includes("iphone") ||
-    name.includes("i phone")
+    value.includes("iphone") ||
+    value.includes("i phone")
   );
 }
 
@@ -1511,25 +1317,20 @@ function normalizeLayerName(
   const type =
     safeType(node);
 
-
   const originalName =
     safeName(node);
 
 
-  /* -----------------------------------------------------
-     TEXT
-  ----------------------------------------------------- */
+  /* Text */
 
   if (
     type === "TEXT"
   ) {
     /*
-     * LID 무조건 유지.
+     * LID 유지.
      */
     if (
-      isLidName(
-        originalName
-      )
+      isLidName(originalName)
     ) {
       return;
     }
@@ -1539,8 +1340,7 @@ function normalizeLayerName(
       renameTextToHyphen
     ) {
       try {
-        node.name =
-          "-";
+        node.name = "-";
       } catch (_) {}
     }
 
@@ -1549,43 +1349,33 @@ function normalizeLayerName(
   }
 
 
-  /* -----------------------------------------------------
-     LINE
-  ----------------------------------------------------- */
+  /* Line */
 
   if (
     type === "LINE"
   ) {
     try {
-      node.name =
-        "line";
+      node.name = "line";
     } catch (_) {}
-
 
     return;
   }
 
 
-  /* -----------------------------------------------------
-     ICON
-  ----------------------------------------------------- */
+  /* Icon */
 
   if (
     looksLikeIcon(node)
   ) {
     try {
-      node.name =
-        "icon";
+      node.name = "icon";
     } catch (_) {}
-
 
     return;
   }
 
 
-  /* -----------------------------------------------------
-     RECTANGLE
-  ----------------------------------------------------- */
+  /* Rectangle */
 
   if (
     type === "RECTANGLE"
@@ -1614,64 +1404,50 @@ function normalizeLayerName(
   }
 
 
-  /* -----------------------------------------------------
-     ELLIPSE
-  ----------------------------------------------------- */
+  /* Ellipse */
 
   if (
     type === "ELLIPSE"
   ) {
     try {
-      node.name =
-        "shape";
+      node.name = "shape";
     } catch (_) {}
-
 
     return;
   }
 
 
-  /* -----------------------------------------------------
-     GROUP
-  ----------------------------------------------------- */
+  /* Group */
 
   if (
     type === "GROUP"
   ) {
     try {
-      node.name =
-        "group";
+      node.name = "group";
     } catch (_) {}
-
 
     return;
   }
 
 
-  /* -----------------------------------------------------
-     FRAME
-  ----------------------------------------------------- */
+  /* Frame */
 
   if (
     type === "FRAME"
   ) {
     try {
       node.name =
-        looksLikeIPhoneFrame(
-          node
-        )
+        looksLikeIPhoneFrame(node)
           ? "iphone"
           : "frame";
-    } catch (_) {}
 
+    } catch (_) {}
 
     return;
   }
 
 
-  /* -----------------------------------------------------
-     COMPONENT
-  ----------------------------------------------------- */
+  /* Component */
 
   if (
     type === "COMPONENT"
@@ -1681,14 +1457,11 @@ function normalizeLayerName(
         "component";
     } catch (_) {}
 
-
     return;
   }
 
 
-  /* -----------------------------------------------------
-     INSTANCE
-  ----------------------------------------------------- */
+  /* Instance */
 
   if (
     type === "INSTANCE"
@@ -1702,36 +1475,34 @@ function normalizeLayerName(
 
 
 /* =========================================================
-   SAFE FLATTEN CHECK
+   SAFE CONTAINER CHECK
 ========================================================= */
 
 /*
- * TRUE일 때만 Container를 제거한다.
-
- * 조금이라도 화면 변화 가능성이 있으면 FALSE.
+ * Container 자체가 구조용 껍데기인지 판단.
+ *
+ * 여기서 TRUE면 Flatten 적극 시도.
  */
-function canFlattenContainerSafely(
-  node,
-  root
-) {
+function canFlattenContainerSafely(node) {
   if (!isContainer(node)) {
     return false;
   }
 
 
   /*
-   * Instance는 먼저 Detach해야 함.
+   * Instance는 먼저 Detach.
    */
   if (
-    safeType(node) ===
-    "INSTANCE"
+    safeType(node) === "INSTANCE"
   ) {
     return false;
   }
 
 
   /*
-   * Auto Layout 자체 제거 금지.
+   * 이 Container 자체가 Auto Layout이면
+   * 자식 위치가 Layout에 의존하므로
+   * 일단 Preserve.
    */
   if (
     isAutoLayout(node)
@@ -1741,23 +1512,19 @@ function canFlattenContainerSafely(
 
 
   /*
-   * Auto Layout 내부 Container 제거 금지.
+   * 이 Container가 부모 Auto Layout의
+   * Flow item이면 제거 시 Parent Layout이 바뀐다.
    */
   if (
-    hasAutoLayoutAncestorUntilRoot(
-      node,
-      root
-    )
+    participatesInAutoLayout(node)
   ) {
     return false;
   }
 
 
   /*
-   * Container 자체 Fill / Stroke가 있으면
-   * 제거 시 Visual 재현이 필요하므로 Preserve.
-   *
-   * 제1법칙 때문에 Shell 복제를 하지 않는다.
+   * Fill/Stroke가 있는 Container 제거는
+   * Visual을 잃을 수 있음.
    */
   if (
     hasOwnVisual(node)
@@ -1807,10 +1574,8 @@ function canFlattenContainerSafely(
   try {
     if (
       "blendMode" in node &&
-      node.blendMode !==
-        "PASS_THROUGH" &&
-      node.blendMode !==
-        "NORMAL"
+      node.blendMode !== "PASS_THROUGH" &&
+      node.blendMode !== "NORMAL"
     ) {
       return false;
     }
@@ -1822,122 +1587,24 @@ function canFlattenContainerSafely(
 
 
 /* =========================================================
-   SAFE REPARENT CHECK
+   INSTANCE DETACH
 ========================================================= */
 
-function canReparentSafely(
-  node,
-  root
-) {
-  if (
-    !isAlive(node) ||
-    !isAlive(root)
-  ) {
-    return false;
-  }
-
-
-  /*
-   * Instance 내부에서 밖으로 직접 빼지 않음.
-   */
-  if (
-    isInsideInstance(node)
-  ) {
-    return false;
-  }
-
-
-  /*
-   * Auto Layout에 의존하면 밖으로 이동 금지.
-   */
-  if (
-    hasAutoLayoutAncestorUntilRoot(
-      node,
-      root
-    )
-  ) {
-    return false;
-  }
-
-
-  return true;
-}
-
-
-/* =========================================================
-   ROOT INSTANCE
-========================================================= */
-
-/*
- * 선택한 Root 자체가 Instance라면
- * Detach를 시도한다.
-
- * Detach는 현재 Visual에는 영향을 주지 않는
- * 구조 변경이므로 허용.
- *
- * 실패하면 그냥 Instance 상태 유지.
- */
-function detachRootInstance(
-  root,
-  stats
-) {
-  if (
-    safeType(root) !==
-    "INSTANCE"
-  ) {
-    return root;
-  }
-
-
-  try {
-    const detached =
-      root.detachInstance();
-
-
-    if (
-      detached &&
-      isAlive(detached)
-    ) {
-      stats.detachedInstances++;
-
-      return detached;
-    }
-
-  } catch (error) {
-    console.warn(
-      "Root Instance preserved:",
-      safeName(root),
-      error
-    );
-  }
-
-
-  return root;
-}
-
-
-/* =========================================================
-   INSTANCE INSIDE SCREEN
-========================================================= */
-
-/*
- * 내부 Instance는 Detach를 시도하지만,
- *
- * Auto Layout 내에 있어도 Detach 자체는
- * 현재 Layout 위치를 바꾸지 않으므로 허용.
- *
- * 실패하면 Instance 그대로 Preserve.
- */
 function tryDetachInstance(
   node,
   stats
 ) {
   if (
-    safeType(node) !==
-    "INSTANCE"
+    safeType(node) !== "INSTANCE"
   ) {
     return node;
   }
+
+
+  /*
+   * Hidden Garbage였다면
+   * Garbage 단계에서 이미 삭제됐어야 함.
+   */
 
 
   try {
@@ -1957,7 +1624,8 @@ function tryDetachInstance(
   } catch (error) {
     console.warn(
       "Instance detach skipped:",
-      safeName(node)
+      safeName(node),
+      error
     );
   }
 
@@ -1977,23 +1645,17 @@ async function processTextNode(
 ) {
   if (
     !isAlive(node) ||
-    safeType(node) !==
-      "TEXT"
+    safeType(node) !== "TEXT"
   ) {
     return;
   }
 
 
-  /*
-   * Inter는 옵션일 때만.
-   */
   if (
     convertFontToInter
   ) {
     const converted =
-      await convertTextToInter(
-        node
-      );
+      await convertTextToInter(node);
 
 
     if (
@@ -2018,126 +1680,229 @@ async function processTextNode(
 
 
 /* =========================================================
-   SAFE MOVE
+   LOCAL ONE-LEVEL FLATTEN
 ========================================================= */
 
-async function moveLeafToRootSafely(
-  node,
+/*
+ * 핵심 변경.
+ *
+ * Child를 Root까지 한 번에 올리지 않는다.
+ *
+ * Container의 바로 Parent로만 이동한다.
+ *
+ * before:
+ *
+ * Parent
+ * └ Container
+ *    ├ A
+ *    └ B
+ *
+ * after:
+ *
+ * Parent
+ * ├ A
+ * └ B
+ *
+ * 다음 Pass에서 Parent도 안전하면
+ * 다시 한 단계 벗긴다.
+ */
+async function flattenContainerOneLevel(
+  container,
   root,
   stats
 ) {
   if (
-    !isAlive(node) ||
-    !isAlive(root)
+    !isAlive(container)
   ) {
     return false;
   }
 
 
-  /*
-   * 이미 Root 바로 아래.
-   * 이동하지 않는다.
-   */
   if (
-    safeParent(node) === root
-  ) {
-    if (
-      safeType(node) === "TEXT"
-    ) {
-      await processTextNode(
-        node,
-        root,
-        stats
-      );
-
-    } else {
-      normalizeLayerName(
-        node,
-        root
-      );
-    }
-
-
-    return true;
-  }
-
-
-  if (
-    !canReparentSafely(
-      node,
-      root
+    !canFlattenContainerSafely(
+      container
     )
   ) {
     return false;
   }
 
 
+  const parent =
+    safeParent(container);
+
+
   if (
-    safeType(node) ===
-    "TEXT"
+    !parent ||
+    !("children" in parent)
   ) {
-    const ready =
-      await ensureTextFontsLoaded(
-        node
-      );
-
-
-    if (!ready) {
-      return false;
-    }
-  }
-
-
-  const transform =
-    safeAbsoluteTransform(
-      node
-    );
-
-
-  if (!transform) {
     return false;
   }
 
 
+  /*
+   * Parent가 Auto Layout이면
+   * Container 제거 자체가 Parent Layout을 바꿀 수 있음.
+   */
+  if (
+    isAutoLayout(parent)
+  ) {
+    return false;
+  }
+
+
+  let containerIndex = -1;
+
+
   try {
-    root.appendChild(
-      node
-    );
-
-
-    node.relativeTransform =
-      absoluteToRelative(
-        transform,
-        root
+    containerIndex =
+      parent.children.indexOf(
+        container
       );
+  } catch (_) {
+    return false;
+  }
 
 
+  if (
+    containerIndex < 0
+  ) {
+    return false;
+  }
+
+
+  const children =
+    childrenOf(container);
+
+
+  /*
+   * 빈 구조용 Container.
+   */
+  if (
+    children.length === 0
+  ) {
     if (
-      safeType(node) === "TEXT"
+      safeRemove(container)
     ) {
-      await processTextNode(
-        node,
-        root,
-        stats
-      );
+      stats.removedContainers++;
 
-    } else {
-      normalizeLayerName(
-        node,
-        root
-      );
+      return true;
+    }
+
+    return false;
+  }
+
+
+  /*
+   * Child의 현재 Absolute Transform 저장.
+   */
+  const snapshots = [];
+
+
+  for (
+    const child of children
+  ) {
+    if (!isAlive(child)) {
+      continue;
     }
 
 
-    stats.movedLayers++;
+    const transform =
+      safeAbsoluteTransform(child);
 
 
-    return true;
+    if (!transform) {
+      return false;
+    }
+
+
+    /*
+     * Text 이동 가능 여부 선검사.
+     */
+    if (
+      safeType(child) === "TEXT"
+    ) {
+      if (
+        !await ensureTextFontsLoaded(
+          child
+        )
+      ) {
+        return false;
+      }
+    }
+
+
+    snapshots.push({
+      child,
+      transform
+    });
+  }
+
+
+  /*
+   * 모두 선검사 통과 후 실제 이동.
+   *
+   * 원래 Container 위치에 Child들을 삽입한다.
+   */
+  let insertionIndex =
+    containerIndex;
+
+
+  try {
+    for (
+      const item of snapshots
+    ) {
+      const child =
+        item.child;
+
+
+      parent.insertChild(
+        insertionIndex,
+        child
+      );
+
+
+      child.relativeTransform =
+        absoluteToRelative(
+          item.transform,
+          parent
+        );
+
+
+      insertionIndex++;
+
+      stats.movedLayers++;
+    }
+
+
+    /*
+     * Container가 비었을 때만 삭제.
+     */
+    if (
+      childrenOf(container)
+        .length === 0
+    ) {
+      if (
+        safeRemove(container)
+      ) {
+        stats.removedContainers++;
+      }
+
+
+      return true;
+    }
+
+
+    return false;
 
   } catch (error) {
+    /*
+     * 여기서 일부 이동이 완료된 뒤 에러가 나면
+     * 롤백하기 어렵기 때문에,
+     * 애초에 매우 안전한 Container만 여기 들어온다.
+     */
     console.warn(
-      "Safe reparent skipped:",
-      safeName(node),
+      "Flatten one-level stopped:",
+      safeName(container),
       error
     );
 
@@ -2148,17 +1913,237 @@ async function moveLeafToRootSafely(
 
 
 /* =========================================================
-   RECURSIVE NAME NORMALIZATION
+   INSTANCE PASS
 ========================================================= */
 
 /*
- * Preserve되는 Container 내부도
- * 이름 변경은 Visual에 영향이 없으므로 정리 가능.
-
- * 단 Instance 내부 Child는 이름 변경이
- * 제한될 수 있으므로 실패하면 그냥 넘어감.
+ * Garbage 삭제 후 Instance Detach.
+ *
+ * Auto Layout 안의 Instance라도
+ * Detach 자체는 현재 렌더와 위치를 유지하므로 시도.
  */
-async function normalizeSubtreeNames(
+function detachInstancesPass(
+  root,
+  stats
+) {
+  let changed =
+    false;
+
+
+  function walk(node) {
+    if (!isAlive(node)) {
+      return;
+    }
+
+
+    const children =
+      childrenOf(node);
+
+
+    for (
+      const original of children
+    ) {
+      if (!isAlive(original)) {
+        continue;
+      }
+
+
+      let child =
+        original;
+
+
+      if (
+        safeType(child) ===
+        "INSTANCE"
+      ) {
+        const detached =
+          tryDetachInstance(
+            child,
+            stats
+          );
+
+
+        if (
+          detached !== child
+        ) {
+          child =
+            detached;
+
+          changed =
+            true;
+        }
+      }
+
+
+      /*
+       * Detach 실패 Instance 내부는
+       * 수정하지 않는다.
+       */
+      if (
+        safeType(child) ===
+        "INSTANCE"
+      ) {
+        continue;
+      }
+
+
+      walk(child);
+    }
+  }
+
+
+  walk(root);
+
+
+  return changed;
+}
+
+
+/* =========================================================
+   FLATTEN PASS
+========================================================= */
+
+async function flattenPass(
+  root,
+  stats
+) {
+  let changed =
+    false;
+
+
+  /*
+   * 가장 깊은 Container부터 처리.
+   */
+  const targets = [];
+
+
+  function collect(
+    node,
+    depth
+  ) {
+    if (!isAlive(node)) {
+      return;
+    }
+
+
+    for (
+      const child of
+      childrenOf(node)
+    ) {
+      collect(
+        child,
+        depth + 1
+      );
+    }
+
+
+    if (
+      node !== root &&
+      isContainer(node)
+    ) {
+      targets.push({
+        node,
+        depth
+      });
+    }
+  }
+
+
+  collect(
+    root,
+    0
+  );
+
+
+  targets.sort(
+    (a, b) =>
+      b.depth -
+      a.depth
+  );
+
+
+  for (
+    const item of targets
+  ) {
+    const node =
+      item.node;
+
+
+    if (!isAlive(node)) {
+      continue;
+    }
+
+
+    /*
+     * Instance가 아직 남아있으면 Preserve.
+     */
+    if (
+      safeType(node) ===
+      "INSTANCE"
+    ) {
+      continue;
+    }
+
+
+    if (
+      !canFlattenContainerSafely(
+        node
+      )
+    ) {
+      continue;
+    }
+
+
+    const flattened =
+      await flattenContainerOneLevel(
+        node,
+        root,
+        stats
+      );
+
+
+    if (flattened) {
+      changed = true;
+    }
+  }
+
+
+  return changed;
+}
+
+
+/* =========================================================
+   MULTI PASS FLATTEN
+========================================================= */
+
+async function flattenSafely(
+  root,
+  stats
+) {
+  for (
+    let pass = 0;
+    pass < MAX_FLATTEN_PASSES;
+    pass++
+  ) {
+    const changed =
+      await flattenPass(
+        root,
+        stats
+      );
+
+
+    if (!changed) {
+      break;
+    }
+  }
+}
+
+
+/* =========================================================
+   NAME + FONT PASS
+========================================================= */
+
+async function normalizeSubtree(
   node,
   root,
   stats
@@ -2185,11 +2170,15 @@ async function normalizeSubtreeNames(
   }
 
 
+  /*
+   * Instance 내부는 이름 수정 제한이 있을 수 있지만
+   * try/catch 기반이라 실패하면 넘어감.
+   */
   for (
     const child of
     childrenOf(node)
   ) {
-    await normalizeSubtreeNames(
+    await normalizeSubtree(
       child,
       root,
       stats
@@ -2199,378 +2188,41 @@ async function normalizeSubtreeNames(
 
 
 /* =========================================================
-   FLATTEN
+   PRESERVED COUNT
 ========================================================= */
 
-/*
- * 중요:
- *
- * Container가 안전하면:
- *
- * Frame
- *   ├ Text
- *   └ Shape
- *
- * →
- *
- * Root
- *   ├ Text
- *   └ Shape
- *
- *
- * 위험하면:
- *
- * Root
- *   └ frame
- *      ├ Text
- *      └ Shape
- *
- * 그대로 유지.
- */
-
-async function flattenNodeSafely(
-  node,
-  root,
-  stats,
-  path
+function countPreservedContainers(
+  root
 ) {
-  if (!isAlive(node)) {
-    return true;
-  }
+  let count = 0;
 
 
-  /* =====================================================
-     GARBAGE
-  ===================================================== */
-
-  const garbageReason =
-    getGarbageReason(node);
-
-
-  if (garbageReason) {
-    if (
-      isSelectedGarbage(
-        node,
-        path
-      )
+  function walk(node) {
+    for (
+      const child of
+      childrenOf(node)
     ) {
       if (
-        canDeleteGarbageSafely(
-          node
-        )
+        isContainer(child)
       ) {
-        if (
-          safeRemove(node)
-        ) {
-          stats.removedGarbage++;
-
-          return true;
-        }
-
-      } else {
-        /*
-         * 사용자가 체크했지만
-         * 삭제 시 화면이 움직일 가능성이 있음.
-         */
-        stats.protectedGarbage++;
+        count++;
       }
 
-    } else {
-      stats.protectedGarbage++;
+
+      walk(child);
     }
   }
 
 
-  /* =====================================================
-     LEAF
-  ===================================================== */
-
-  if (
-    !isContainer(node)
-  ) {
-    const moved =
-      await moveLeafToRootSafely(
-        node,
-        root,
-        stats
-      );
+  walk(root);
 
 
-    /*
-     * 이동 불가라도 이름/Font는
-     * 현재 위치에서 처리 가능.
-     */
-    if (!moved) {
-      if (
-        safeType(node) === "TEXT"
-      ) {
-        await processTextNode(
-          node,
-          root,
-          stats
-        );
-
-      } else {
-        normalizeLayerName(
-          node,
-          root
-        );
-      }
-    }
-
-
-    return moved;
-  }
-
-
-  /* =====================================================
-     INSTANCE
-  ===================================================== */
-
-  if (
-    safeType(node) ===
-    "INSTANCE"
-  ) {
-    const detached =
-      tryDetachInstance(
-        node,
-        stats
-      );
-
-
-    /*
-     * Detach 실패.
-     */
-    if (
-      safeType(detached) ===
-        "INSTANCE"
-    ) {
-      normalizeLayerName(
-        detached,
-        root
-      );
-
-
-      stats.preservedAreas++;
-
-
-      return true;
-    }
-
-
-    /*
-     * Detach 성공.
-     */
-    node =
-      detached;
-  }
-
-
-  /* =====================================================
-     SAFE CHECK
-  ===================================================== */
-
-  if (
-    !canFlattenContainerSafely(
-      node,
-      root
-    )
-  ) {
-    /*
-     * Container 그대로 유지.
-     */
-    await normalizeSubtreeNames(
-      node,
-      root,
-      stats
-    );
-
-
-    stats.preservedAreas++;
-
-
-    return true;
-  }
-
-
-  /* =====================================================
-     SAFE CONTAINER
-  ===================================================== */
-
-  const children =
-    childrenOf(node);
-
-
-  let allMoved =
-    true;
-
-
-  for (
-    let i = 0;
-    i < children.length;
-    i++
-  ) {
-    const child =
-      children[i];
-
-
-    if (!isAlive(child)) {
-      continue;
-    }
-
-
-    const childPath =
-      path === ""
-        ? String(i)
-        : `${path}/${i}`;
-
-
-    const success =
-      await flattenNodeSafely(
-        child,
-        root,
-        stats,
-        childPath
-      );
-
-
-    if (!success) {
-      allMoved =
-        false;
-    }
-  }
-
-
-  /*
-   * Container가 완전히 비어있는 경우에만 삭제.
-   */
-  if (
-    isAlive(node) &&
-    childrenOf(node)
-      .length === 0
-  ) {
-    if (
-      safeRemove(node)
-    ) {
-      stats.removedContainers++;
-
-
-      return true;
-    }
-  }
-
-
-  /*
-   * Child 하나라도 남아있으면
-   * 절대 Container 삭제하지 않는다.
-   */
-  if (
-    isAlive(node)
-  ) {
-    normalizeLayerName(
-      node,
-      root
-    );
-
-
-    stats.preservedAreas++;
-  }
-
-
-  return allMoved;
+  return count;
 }
 
 
 /* =========================================================
-   SAFE CLEAN ROOT
-========================================================= */
-
-async function cleanRoot(
-  root,
-  stats
-) {
-  /*
-   * 중요:
-   * Root Auto Layout은 절대 해제하지 않는다.
-   */
-
-
-  const children =
-    childrenOf(root);
-
-
-  for (
-    let i = 0;
-    i < children.length;
-    i++
-  ) {
-    const child =
-      children[i];
-
-
-    if (!isAlive(child)) {
-      continue;
-    }
-
-
-    try {
-      await flattenNodeSafely(
-        child,
-        root,
-        stats,
-        String(i)
-      );
-
-    } catch (error) {
-      /*
-       * 개별 Layer 실패가
-       * 전체 Screen 실패로 이어지지 않음.
-       */
-      console.warn(
-        "Layer preserved:",
-        safeName(child),
-        error
-      );
-
-
-      stats.preservedAreas++;
-
-
-      try {
-        await normalizeSubtreeNames(
-          child,
-          root,
-          stats
-        );
-      } catch (_) {}
-    }
-  }
-
-
-  /*
-   * 최종 Root Child 이름 정리.
-   */
-  for (
-    const child of
-    childrenOf(root)
-  ) {
-    try {
-      normalizeLayerName(
-        child,
-        root
-      );
-    } catch (_) {}
-  }
-
-
-  stats.finalLayers =
-    childrenOf(root)
-      .length;
-}
-
-
-/* =========================================================
-   LAYER ORDER
+   ORDERING
 ========================================================= */
 
 function getSpatialBounds(node) {
@@ -2612,29 +2264,14 @@ function boundsOverlap(
 
 
   return !(
-    a.x + a.width <=
-      b.x ||
-
-    b.x + b.width <=
-      a.x ||
-
-    a.y + a.height <=
-      b.y ||
-
-    b.y + b.height <=
-      a.y
+    a.x + a.width <= b.x ||
+    b.x + b.width <= a.x ||
+    a.y + a.height <= b.y ||
+    b.y + b.height <= a.y
   );
 }
 
 
-/*
- * Layer Panel 읽기 순서:
- *
- * 1. 위 → 아래
- * 2. 같은 줄 → 좌 → 우
- *
- * LID / Text / Icon 등 종류를 구분하지 않는다.
- */
 function compareSpatial(
   a,
   b
@@ -2661,7 +2298,7 @@ function compareSpatial(
 
 
   /*
-   * 같은 줄
+   * 같은 줄 → 좌 → 우
    */
   if (
     Math.abs(
@@ -2669,16 +2306,15 @@ function compareSpatial(
       bCenterY
     ) <= ROW_TOLERANCE
   ) {
-    const xDiff =
+    const x =
       a.bounds.x -
       b.bounds.x;
 
 
     if (
-      Math.abs(xDiff) >
-      0.1
+      Math.abs(x) > 0.1
     ) {
-      return xDiff;
+      return x;
     }
   }
 
@@ -2686,29 +2322,15 @@ function compareSpatial(
   /*
    * 위 → 아래
    */
-  const yDiff =
+  const y =
     a.bounds.y -
     b.bounds.y;
 
 
   if (
-    Math.abs(yDiff) >
-    0.1
+    Math.abs(y) > 0.1
   ) {
-    return yDiff;
-  }
-
-
-  const xDiff =
-    a.bounds.x -
-    b.bounds.x;
-
-
-  if (
-    Math.abs(xDiff) >
-    0.1
-  ) {
-    return xDiff;
+    return y;
   }
 
 
@@ -2720,35 +2342,18 @@ function compareSpatial(
 
 
 /*
- * Auto Layout Root에서는
- * Layer 순서 변경 자체가 Layout에 영향을 줄 수 있으므로
- * 절대 정렬하지 않는다.
+ * 정렬은 Root 바로 아래에서만.
  *
- * 일반 Root에서는
- * 겹치는 Layer의 Z-order를 유지하면서
- * 나머지만 위치순 정렬.
+ * Root가 Auto Layout이면 순서 변경이
+ * 화면 위치 자체를 바꿀 수 있으므로 Skip.
+ *
+ * 겹치는 Layer는 기존 Z-order 관계 유지.
  */
-function sortLayersSafely(
-  root
-) {
+function sortRootLayersSafely(root) {
   if (
-    !isAlive(root)
-  ) {
-    return;
-  }
-
-
-  /*
-   * Auto Layout Root 정렬 금지.
-   */
-  if (
+    !isAlive(root) ||
     isAutoLayout(root)
   ) {
-    console.log(
-      "Layer order preserved: Root uses Auto Layout."
-    );
-
-
     return;
   }
 
@@ -2764,9 +2369,6 @@ function sortLayersSafely(
   }
 
 
-  /*
-   * Panel 기준 현재 위 → 아래.
-   */
   const panelOrder =
     [...children]
       .reverse();
@@ -2793,8 +2395,7 @@ function sortLayersSafely(
 
 
   /*
-   * 겹치는 Layer는
-   * 기존 Z-order 관계를 고정.
+   * 겹치는 Layer는 기존 Z-order 잠금.
    */
   for (
     let i = 0;
@@ -2823,17 +2424,12 @@ function sortLayersSafely(
           back
         );
 
-
         back.indegree++;
       }
     }
   }
 
 
-  /*
-   * Z-order Constraint를 지키면서
-   * 위치순으로 정렬.
-   */
   const available =
     items.filter(
       item =>
@@ -2841,7 +2437,7 @@ function sortLayersSafely(
     );
 
 
-  const desiredPanelOrder =
+  const desiredPanel =
     [];
 
 
@@ -2857,7 +2453,7 @@ function sortLayersSafely(
       available.shift();
 
 
-    desiredPanelOrder.push(
+    desiredPanel.push(
       current
     );
 
@@ -2881,44 +2477,28 @@ function sortLayersSafely(
 
 
   if (
-    desiredPanelOrder.length !==
+    desiredPanel.length !==
     items.length
   ) {
-    console.warn(
-      "Layer ordering skipped."
-    );
-
-
     return;
   }
 
 
   /*
-   * Layer Panel:
-   *
-   * A
-   * B
-   * C
-   *
-   * Figma children:
-   *
-   * C
-   * B
-   * A
+   * Layer Panel 위→아래의 반대가
+   * 실제 children 순서.
    */
   const desiredChildren =
-    desiredPanelOrder
+    desiredPanel
       .map(
-        item =>
-          item.node
+        item => item.node
       )
       .reverse();
 
 
   for (
     let i = 0;
-    i <
-      desiredChildren.length;
+    i < desiredChildren.length;
     i++
   ) {
     const node =
@@ -2936,13 +2516,7 @@ function sortLayersSafely(
         node
       );
 
-    } catch (error) {
-      console.warn(
-        "Layer order preserved after error:",
-        safeName(node)
-      );
-
-
+    } catch (_) {
       return;
     }
   }
@@ -2961,7 +2535,6 @@ function analyzeScreen(root) {
     garbageItems: [],
 
     containers: 0,
-
     instances: 0,
     autoLayouts: 0,
 
@@ -2974,11 +2547,6 @@ function analyzeScreen(root) {
     icons: 0,
     lines: 0,
 
-    /*
-     * 기존 UI 호환.
-     *
-     * 이번에는 "Preserve Candidate" 의미.
-     */
     bakeCandidates: 0
   };
 
@@ -3005,15 +2573,11 @@ function analyzeScreen(root) {
         : name;
 
 
-    /* -------------------------------------------------
-       Garbage
-    ------------------------------------------------- */
-
-    const garbageReason =
+    const reason =
       getGarbageReason(node);
 
 
-    if (garbageReason) {
+    if (reason) {
       result.garbage++;
 
 
@@ -3027,18 +2591,13 @@ function analyzeScreen(root) {
           safeType(node) ||
           "UNKNOWN",
 
-        reason:
-          garbageReason,
+        reason,
 
         path:
           currentPath
       });
     }
 
-
-    /* -------------------------------------------------
-       Container
-    ------------------------------------------------- */
 
     if (
       node !== root &&
@@ -3047,10 +2606,13 @@ function analyzeScreen(root) {
       result.containers++;
 
 
+      /*
+       * 기존 UI 필드명 유지.
+       * 실제 의미 = Preserve 후보.
+       */
       if (
         !canFlattenContainerSafely(
-          node,
-          root
+          node
         )
       ) {
         result.bakeCandidates++;
@@ -3058,21 +2620,12 @@ function analyzeScreen(root) {
     }
 
 
-    /* -------------------------------------------------
-       Instance
-    ------------------------------------------------- */
-
     if (
-      safeType(node) ===
-      "INSTANCE"
+      safeType(node) === "INSTANCE"
     ) {
       result.instances++;
     }
 
-
-    /* -------------------------------------------------
-       Auto Layout
-    ------------------------------------------------- */
 
     if (
       isAutoLayout(node)
@@ -3081,41 +2634,26 @@ function analyzeScreen(root) {
     }
 
 
-    /* -------------------------------------------------
-       Mask
-    ------------------------------------------------- */
-
     try {
       if (
         "isMask" in node &&
-        node.isMask === true
+        node.isMask
       ) {
         result.masks++;
       }
     } catch (_) {}
 
 
-    /* -------------------------------------------------
-       Clip
-    ------------------------------------------------- */
-
     if (
       node !== root &&
-      actuallyClipsChildren(
-        node
-      )
+      actuallyClipsChildren(node)
     ) {
       result.clips++;
     }
 
 
-    /* -------------------------------------------------
-       Text
-    ------------------------------------------------- */
-
     if (
-      safeType(node) ===
-      "TEXT"
+      safeType(node) === "TEXT"
     ) {
       result.text++;
 
@@ -3127,18 +2665,14 @@ function analyzeScreen(root) {
           );
 
 
-        const nonInter =
+        if (
           segments.some(
             segment =>
               !segment.fontName ||
-              segment.fontName ===
-                figma.mixed ||
-              segment.fontName.family !==
-                "Inter"
-          );
-
-
-        if (nonInter) {
+              segment.fontName === figma.mixed ||
+              segment.fontName.family !== "Inter"
+          )
+        ) {
           result.nonInterText++;
         }
 
@@ -3148,10 +2682,6 @@ function analyzeScreen(root) {
     }
 
 
-    /* -------------------------------------------------
-       Icon
-    ------------------------------------------------- */
-
     if (
       looksLikeIcon(node)
     ) {
@@ -3159,13 +2689,8 @@ function analyzeScreen(root) {
     }
 
 
-    /* -------------------------------------------------
-       Line
-    ------------------------------------------------- */
-
     if (
-      safeType(node) ===
-      "LINE"
+      safeType(node) === "LINE"
     ) {
       result.lines++;
     }
@@ -3197,110 +2722,129 @@ function analyzeScreen(root) {
    PROCESS ROOT
 ========================================================= */
 
-async function processRoot(
-  originalRoot
-) {
+async function processRoot(root) {
   const stats =
     createStats();
 
 
-  if (!isAlive(originalRoot)) {
+  if (!isAlive(root)) {
     return {
       success: false,
-      root: originalRoot,
-      stats
-    };
-  }
-
-
-  /*
-   * Garbage Path는
-   * 구조 변경 전에 확보.
-   */
-  approvedGarbagePaths =
-    prepareGarbagePaths(
-      originalRoot
-    );
-
-
-  let root =
-    originalRoot;
-
-
-  /*
-   * 선택 Root 자체가 Instance일 경우에만
-   * Detach를 시도.
-   *
-   * 부모 Instance를 강제로 Detach하지 않는다.
-   * 주변 Screen까지 구조가 바뀔 수 있기 때문.
-   */
-  root =
-    detachRootInstance(
-      root,
-      stats
-    );
-
-
-  if (
-    !root ||
-    !isAlive(root)
-  ) {
-    return {
-      success: false,
-      root: originalRoot,
-      stats
-    };
-  }
-
-
-  /*
-   * 여전히 다른 Instance 내부라면
-   * 구조 변경은 하지 않는다.
-   *
-   * 이름 정리 / Inter 같은
-   * 비구조 작업만 가능한 범위에서 실행.
-   */
-  if (
-    isInsideInstance(root)
-  ) {
-    try {
-      await normalizeSubtreeNames(
-        root,
-        root,
-        stats
-      );
-    } catch (_) {}
-
-
-    stats.preservedAreas++;
-    stats.finalLayers =
-      childrenOf(root)
-        .length;
-
-
-    return {
-      success: true,
       root,
       stats
     };
   }
 
 
+  /* =====================================================
+     1. GARBAGE FIRST
+  ===================================================== */
+
   /*
-   * Root 자체 Auto Layout도 그대로 유지.
+   * ID가 바뀌기 전에 먼저 삭제.
    */
-  await cleanRoot(
+  deleteSelectedGarbage(
     root,
     stats
   );
 
 
-  /*
-   * 안전한 경우에만 정렬.
-   */
-  sortLayersSafely(
+  /* =====================================================
+     2. ROOT INSTANCE
+  ===================================================== */
+
+  if (
+    safeType(root) === "INSTANCE"
+  ) {
+    const detached =
+      tryDetachInstance(
+        root,
+        stats
+      );
+
+
+    if (
+      safeType(detached) === "INSTANCE"
+    ) {
+      /*
+       * Root Instance detach 실패.
+       * 구조 작업은 포기.
+       */
+      await normalizeSubtree(
+        detached,
+        detached,
+        stats
+      );
+
+
+      stats.preservedAreas++;
+
+      stats.finalLayers =
+        childrenOf(detached)
+          .length;
+
+
+      return {
+        success: true,
+        root: detached,
+        stats
+      };
+    }
+
+
+    root =
+      detached;
+  }
+
+
+  /* =====================================================
+     3. INTERNAL INSTANCE DETACH
+  ===================================================== */
+
+  detachInstancesPass(
+    root,
+    stats
+  );
+
+
+  /* =====================================================
+     4. SAFE MULTI-PASS FLATTEN
+  ===================================================== */
+
+  await flattenSafely(
+    root,
+    stats
+  );
+
+
+  /* =====================================================
+     5. NAME + FONT
+  ===================================================== */
+
+  await normalizeSubtree(
+    root,
+    root,
+    stats
+  );
+
+
+  /* =====================================================
+     6. ORDER
+  ===================================================== */
+
+  sortRootLayersSafely(
     root
   );
+
+
+  /* =====================================================
+     7. RESULT
+  ===================================================== */
+
+  stats.preservedAreas =
+    countPreservedContainers(
+      root
+    );
 
 
   stats.finalLayers =
@@ -3317,7 +2861,7 @@ async function processRoot(
 
 
 /* =========================================================
-   UI MESSAGE HANDLER
+   UI
 ========================================================= */
 
 figma.ui.onmessage =
@@ -3338,12 +2882,11 @@ async msg => {
 
 
   /* =====================================================
-     SELECT GARBAGE LAYER
+     SELECT LAYER
   ===================================================== */
 
   if (
-    msg.type ===
-    "select-layer"
+    msg.type === "select-layer"
   ) {
     try {
       const node =
@@ -3354,10 +2897,8 @@ async msg => {
 
       if (
         !node ||
-        node.type ===
-          "DOCUMENT" ||
-        node.type ===
-          "PAGE"
+        node.type === "DOCUMENT" ||
+        node.type === "PAGE"
       ) {
         return;
       }
@@ -3380,7 +2921,7 @@ async msg => {
 
 
   /* =====================================================
-     CURRENT SELECTION
+     SELECTION
   ===================================================== */
 
   const selection =
@@ -3436,8 +2977,7 @@ async msg => {
   ===================================================== */
 
   if (
-    msg.type ===
-    "analyze"
+    msg.type === "analyze"
   ) {
     const results =
       selection.map(
@@ -3448,16 +2988,10 @@ async msg => {
           rootType:
             safeType(root),
 
-          /*
-           * 제1법칙 때문에
-           * 무조건 Frame 변환하지 않음.
-           */
           willConvertToFrame:
             false,
 
-          ...analyzeScreen(
-            root
-          )
+          ...analyzeScreen(root)
         })
       );
 
@@ -3479,9 +3013,11 @@ async msg => {
   ===================================================== */
 
   if (
-    msg.type ===
-    "clean"
+    msg.type === "clean"
   ) {
+    /*
+     * UI Garbage 체크박스.
+     */
     approvedGarbageIds =
       new Set(
         msg.garbageIds || []
@@ -3512,11 +3048,6 @@ async msg => {
       screens:
         selection.length,
 
-      /*
-       * 기존 UI에서 PASS / FAIL을 판단하므로 유지.
-       *
-       * Preserve가 있어도 정상 처리 = committed.
-       */
       committed: 0,
       rolledBack: 0,
 
@@ -3535,7 +3066,6 @@ async msg => {
       failedFontConversions: 0,
 
       visualShells: 0,
-
       bakedAreas: 0,
 
       finalLayers: 0
@@ -3544,21 +3074,16 @@ async msg => {
 
     try {
       for (
-        const originalRoot of
-        selection
+        const root of selection
       ) {
         try {
           const result =
-            await processRoot(
-              originalRoot
-            );
+            await processRoot(root);
 
 
           if (
             result.root &&
-            isAlive(
-              result.root
-            )
+            isAlive(result.root)
           ) {
             resultRoots.push(
               result.root
@@ -3590,35 +3115,24 @@ async msg => {
             }
           }
 
-        } catch (screenError) {
-          /*
-           * 한 Screen 오류 때문에
-           * 전체 Plugin 중단하지 않음.
-           */
+        } catch (error) {
           console.warn(
-            "Screen cleanup preserved:",
-            safeName(
-              originalRoot
-            ),
-            screenError
+            "Screen preserved after error:",
+            safeName(root),
+            error
           );
 
 
           if (
-            isAlive(
-              originalRoot
-            )
+            isAlive(root)
           ) {
-            resultRoots.push(
-              originalRoot
-            );
+            resultRoots.push(root);
           }
 
 
           /*
-           * 화면이 그대로 남아있다면
-           * 이것도 Rollback 실패가 아니라
-           * Preserve 처리로 간주.
+           * 화면 보존 상태면 전체 실패로
+           * 처리하지 않는다.
            */
           total.committed++;
           total.preservedAreas++;
@@ -3657,10 +3171,17 @@ async msg => {
 
 
       if (
+        total.protectedGarbage > 0
+      ) {
+        figma.notify(
+          `Cleanup 완료 · Garbage ${total.removedGarbage}개 삭제 / 화면 보호로 ${total.protectedGarbage}개 유지`
+        );
+
+      } else if (
         total.preservedAreas > 0
       ) {
         figma.notify(
-          `Cleanup 완료 · 화면 보호를 위해 ${total.preservedAreas}개 복잡 영역의 구조를 유지했습니다.`
+          `Cleanup 완료 · Garbage ${total.removedGarbage}개 삭제 / 복잡 Container ${total.preservedAreas}개 유지`
         );
 
       } else {
