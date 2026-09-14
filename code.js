@@ -1,6 +1,6 @@
 figma.showUI(__html__, {
-  width: 400,
-  height: 580,
+  width: 420,
+  height: 680,
   themeColors: true
 });
 
@@ -9,23 +9,29 @@ figma.showUI(__html__, {
    Screen Layer Cleaner
    =========================================================
 
-   목표
+   기능
 
-   1. 화면에 보이지 않는 Garbage Layer 삭제
-   2. Instance Detach
-   3. Auto Layout / Frame / Group / Component 구조 제거
-   4. 실제 표시되는 Layer를 Screen 바로 아래 1 Depth로 이동
-   5. 기존 Visual 최대한 유지
-   6. Clip / Mask / Composite 예외는 Image Bake
-   7. Text Layer Name → "-"
-   8. Icon → "icon"
-   9. Line → "line"
-   10. Rectangle → "shape"
-   11. Image → "image"
+   1. Garbage 후보 분석
+   2. 사용자가 승인한 Garbage만 삭제
+   3. Instance Detach
+   4. Frame / Group / Auto Layout 제거
+   5. 가능한 모든 Layer를 Screen 바로 아래 1 Depth
+   6. Mask / Clip / Composite → Visual Bake
+   7. Text Font → Inter
+   8. Text Layer Name → "-"
+   9. Vector / Icon → "icon"
+   10. Line → "line"
+   11. Rectangle → "shape"
+   12. Image Fill → "image"
 
-   중요:
-   선택한 최상위 Screen Frame 자체는 유지한다.
 ========================================================= */
+
+
+/* =========================================================
+   Global State
+========================================================= */
+
+let approvedGarbageIds = new Set();
 
 
 /* =========================================================
@@ -33,35 +39,37 @@ figma.showUI(__html__, {
 ========================================================= */
 
 function multiplyTransform(a, b) {
+
   return [
     [
       a[0][0] * b[0][0] +
-        a[0][1] * b[1][0],
+      a[0][1] * b[1][0],
 
       a[0][0] * b[0][1] +
-        a[0][1] * b[1][1],
+      a[0][1] * b[1][1],
 
       a[0][0] * b[0][2] +
-        a[0][1] * b[1][2] +
-        a[0][2]
+      a[0][1] * b[1][2] +
+      a[0][2]
     ],
 
     [
       a[1][0] * b[0][0] +
-        a[1][1] * b[1][0],
+      a[1][1] * b[1][0],
 
       a[1][0] * b[0][1] +
-        a[1][1] * b[1][1],
+      a[1][1] * b[1][1],
 
       a[1][0] * b[0][2] +
-        a[1][1] * b[1][2] +
-        a[1][2]
+      a[1][1] * b[1][2] +
+      a[1][2]
     ]
   ];
 }
 
 
 function invertTransform(m) {
+
   const a = m[0][0];
   const c = m[0][1];
   const e = m[0][2];
@@ -78,7 +86,9 @@ function invertTransform(m) {
     );
   }
 
-  const invDet = 1 / det;
+  const invDet =
+    1 / det;
+
 
   return [
     [
@@ -100,10 +110,12 @@ function absoluteToRelative(
   absoluteTransform,
   parent
 ) {
+
   const parentInverse =
     invertTransform(
       parent.absoluteTransform
     );
+
 
   return multiplyTransform(
     parentInverse,
@@ -112,19 +124,17 @@ function absoluteToRelative(
 }
 
 
-/**
- * Render Bounds 같이
- * 절대 x, y만 가지고 있을 때 사용
- */
 function positionToRelativeTransform(
   x,
   y,
   parent
 ) {
+
   const absoluteTransform = [
     [1, 0, x],
     [0, 1, y]
   ];
+
 
   return absoluteToRelative(
     absoluteTransform,
@@ -134,20 +144,32 @@ function positionToRelativeTransform(
 
 
 /* =========================================================
-   Node Type Helpers
+   Node Helpers
 ========================================================= */
 
+function hasChildren(node) {
+
+  return (
+    "children" in node &&
+    node.children != null
+  );
+}
+
+
 function isContainer(node) {
+
   return (
     node.type === "FRAME" ||
     node.type === "GROUP" ||
     node.type === "COMPONENT" ||
-    node.type === "INSTANCE"
+    node.type === "INSTANCE" ||
+    node.type === "SECTION"
   );
 }
 
 
 function isIconType(node) {
+
   return (
     node.type === "VECTOR" ||
     node.type === "BOOLEAN_OPERATION" ||
@@ -158,33 +180,21 @@ function isIconType(node) {
 }
 
 
-function hasChildren(node) {
-  return (
-    "children" in node &&
-    Array.isArray(node.children)
-  );
-}
-
-
 /* =========================================================
-   Garbage Detection
+   Garbage
 ========================================================= */
 
-/**
- * "확실하게 화면에 영향을 주지 않는 것"만 삭제한다.
- *
- * 애매한 경우에는 삭제하지 않는다.
- */
-function isDefinitelyGarbage(node) {
+function getGarbageReason(node) {
 
   /*
-   * Figma hidden layer
+   * Hidden
    */
   if (
     "visible" in node &&
     node.visible === false
   ) {
-    return true;
+
+    return "Hidden · visible=false";
   }
 
 
@@ -195,71 +205,96 @@ function isDefinitelyGarbage(node) {
     "opacity" in node &&
     node.opacity === 0
   ) {
-    return true;
+
+    return "Transparent · opacity=0";
   }
 
 
   /*
-   * Slice는 화면 렌더링 자체가 목적이 아니므로 제거
+   * Slice
    */
-  if (node.type === "SLICE") {
-    return true;
+  if (
+    node.type === "SLICE"
+  ) {
+
+    return "Slice Layer";
   }
 
 
-  return false;
+  return null;
+}
+
+
+function isDefinitelyGarbage(node) {
+
+  return (
+    getGarbageReason(node) !== null
+  );
 }
 
 
 /* =========================================================
-   Paint Helpers
+   Paint
 ========================================================= */
 
 function hasVisiblePaint(paints) {
+
   if (
     !Array.isArray(paints)
   ) {
+
     return false;
   }
 
-  return paints.some(paint => {
 
-    if (
-      paint.visible === false
-    ) {
-      return false;
+  return paints.some(
+    paint => {
+
+      if (
+        paint.visible === false
+      ) {
+
+        return false;
+      }
+
+
+      if (
+        typeof paint.opacity === "number" &&
+        paint.opacity === 0
+      ) {
+
+        return false;
+      }
+
+
+      return true;
     }
-
-    if (
-      typeof paint.opacity === "number" &&
-      paint.opacity === 0
-    ) {
-      return false;
-    }
-
-    return true;
-  });
+  );
 }
 
 
 function hasVisibleEffects(node) {
+
   if (
     !("effects" in node) ||
     !Array.isArray(node.effects)
   ) {
+
     return false;
   }
 
-  return node.effects.some(effect => {
-    return effect.visible !== false;
-  });
+
+  return node.effects.some(
+    effect => {
+
+      return (
+        effect.visible !== false
+      );
+    }
+  );
 }
 
 
-/**
- * Frame / Component 자체가
- * 실제 Visual을 가지고 있는지 확인
- */
 function hasOwnVisual(node) {
 
   if (
@@ -267,23 +302,51 @@ function hasOwnVisual(node) {
     node.fills !== figma.mixed &&
     hasVisiblePaint(node.fills)
   ) {
+
     return true;
   }
+
 
   if (
     "strokes" in node &&
     node.strokes !== figma.mixed &&
     hasVisiblePaint(node.strokes)
   ) {
+
     return true;
   }
+
 
   return false;
 }
 
 
+function hasImageFill(node) {
+
+  if (
+    !("fills" in node) ||
+    node.fills === figma.mixed ||
+    !Array.isArray(node.fills)
+  ) {
+
+    return false;
+  }
+
+
+  return node.fills.some(
+    fill => {
+
+      return (
+        fill.type === "IMAGE" &&
+        fill.visible !== false
+      );
+    }
+  );
+}
+
+
 /* =========================================================
-   Mask / Composite Detection
+   Mask / Clip Detection
 ========================================================= */
 
 function containsMask(node) {
@@ -292,34 +355,34 @@ function containsMask(node) {
     return false;
   }
 
-  for (const child of node.children) {
+
+  for (
+    const child of node.children
+  ) {
 
     if (
       "isMask" in child &&
       child.isMask === true
     ) {
+
       return true;
     }
+
 
     if (
       hasChildren(child) &&
       containsMask(child)
     ) {
+
       return true;
     }
   }
+
 
   return false;
 }
 
 
-/**
- * 구조를 없앴을 때 시각적으로 동일하다고
- * 보장하기 어려운 Container 판단
- *
- * 이런 경우 "중단"하지 않고
- * Image Bake 처리한다.
- */
 function needsBake(node) {
 
   if (!isContainer(node)) {
@@ -328,37 +391,36 @@ function needsBake(node) {
 
 
   /*
-   * Nested Clip
-   *
-   * Root Screen의 Clip은 유지하므로
-   * Root는 이 함수에 넣지 않는다.
+   * Clip Content
    */
   if (
     "clipsContent" in node &&
     node.clipsContent === true
   ) {
+
     return true;
   }
 
 
   /*
-   * Mask 구조
+   * Mask
    */
-  if (containsMask(node)) {
+  if (
+    containsMask(node)
+  ) {
+
     return true;
   }
 
 
   /*
-   * Parent opacity가 1이 아닐 경우
-   *
-   * 자식을 바깥으로 빼면
-   * alpha compositing 결과가 달라질 수 있다.
+   * Parent opacity
    */
   if (
     "opacity" in node &&
     node.opacity !== 1
   ) {
+
     return true;
   }
 
@@ -371,17 +433,18 @@ function needsBake(node) {
     node.blendMode !== "PASS_THROUGH" &&
     node.blendMode !== "NORMAL"
   ) {
+
     return true;
   }
 
 
   /*
-   * Blur / Shadow 등의 Effect
-   *
-   * Container 레벨 효과는
-   * 안전하게 Bake한다.
+   * Parent effect
    */
-  if (hasVisibleEffects(node)) {
+  if (
+    hasVisibleEffects(node)
+  ) {
+
     return true;
   }
 
@@ -391,25 +454,406 @@ function needsBake(node) {
 
 
 /* =========================================================
-   Image Fill Detection
+   Inter Font
 ========================================================= */
 
-function hasImageFill(node) {
+/*
+   Figma의 일반적인 Inter style 이름.
+
+   시스템/파일 환경에 따라 특정 스타일이 없을 경우
+   Regular로 fallback한다.
+*/
+
+const INTER_STYLES = [
+  "Thin",
+  "Thin Italic",
+
+  "Extra Light",
+  "Extra Light Italic",
+
+  "Light",
+  "Light Italic",
+
+  "Regular",
+  "Italic",
+
+  "Medium",
+  "Medium Italic",
+
+  "Semi Bold",
+  "Semi Bold Italic",
+
+  "Bold",
+  "Bold Italic",
+
+  "Extra Bold",
+  "Extra Bold Italic",
+
+  "Black",
+  "Black Italic"
+];
+
+
+const loadedInterStyles =
+  new Set();
+
+
+/*
+   원래 폰트 Style을 보고
+   가장 가까운 Inter Style을 선택한다.
+*/
+function mapFontStyleToInter(
+  sourceStyle
+) {
+
+  const original =
+    String(
+      sourceStyle || ""
+    );
+
+
+  const style =
+    original
+      .toLowerCase()
+      .replace(/[_-]/g, " ");
+
+
+  const italic =
+    style.includes("italic") ||
+    style.includes("oblique");
+
+
+  let weight =
+    "Regular";
+
 
   if (
-    !("fills" in node) ||
-    node.fills === figma.mixed ||
-    !Array.isArray(node.fills)
+    style.includes("black") ||
+    style.includes("heavy")
   ) {
-    return false;
+
+    weight = "Black";
+
+  } else if (
+    style.includes("extra bold") ||
+    style.includes("extrabold") ||
+    style.includes("ultra bold")
+  ) {
+
+    weight = "Extra Bold";
+
+  } else if (
+    style.includes("semi bold") ||
+    style.includes("semibold") ||
+    style.includes("demi bold") ||
+    style.includes("demibold")
+  ) {
+
+    weight = "Semi Bold";
+
+  } else if (
+    style.includes("bold")
+  ) {
+
+    weight = "Bold";
+
+  } else if (
+    style.includes("medium")
+  ) {
+
+    weight = "Medium";
+
+  } else if (
+    style.includes("extra light") ||
+    style.includes("extralight") ||
+    style.includes("ultra light")
+  ) {
+
+    weight = "Extra Light";
+
+  } else if (
+    style.includes("light")
+  ) {
+
+    weight = "Light";
+
+  } else if (
+    style.includes("thin")
+  ) {
+
+    weight = "Thin";
   }
 
-  return node.fills.some(fill => {
-    return (
-      fill.type === "IMAGE" &&
-      fill.visible !== false
+
+  if (italic) {
+
+    if (weight === "Regular") {
+      return "Italic";
+    }
+
+    return `${weight} Italic`;
+  }
+
+
+  return weight;
+}
+
+
+/*
+   Inter Font Load
+*/
+async function loadInterStyle(
+  style
+) {
+
+  if (
+    loadedInterStyles.has(style)
+  ) {
+
+    return style;
+  }
+
+
+  try {
+
+    await figma.loadFontAsync({
+      family: "Inter",
+      style
+    });
+
+
+    loadedInterStyles.add(
+      style
     );
-  });
+
+
+    return style;
+
+
+  } catch (error) {
+
+    /*
+     * 해당 Weight가 없는 경우
+     * Regular fallback
+     */
+    console.warn(
+      `Inter ${style} load failed.`,
+      error
+    );
+
+
+    if (
+      !loadedInterStyles.has(
+        "Regular"
+      )
+    ) {
+
+      await figma.loadFontAsync({
+        family: "Inter",
+        style: "Regular"
+      });
+
+
+      loadedInterStyles.add(
+        "Regular"
+      );
+    }
+
+
+    return "Regular";
+  }
+}
+
+
+/*
+   Text 하나를 Inter로 변환.
+
+   Text 내용, Font Size, Line Height,
+   Letter Spacing 등은 건드리지 않는다.
+*/
+async function convertTextNodeToInter(
+  node
+) {
+
+  if (
+    node.type !== "TEXT"
+  ) {
+
+    return {
+      converted: false,
+      segments: 0
+    };
+  }
+
+
+  const length =
+    node.characters.length;
+
+
+  /*
+   * 빈 Text Layer
+   */
+  if (
+    length === 0
+  ) {
+
+    const style =
+      await loadInterStyle(
+        "Regular"
+      );
+
+
+    try {
+
+      node.fontName = {
+        family: "Inter",
+        style
+      };
+
+
+      return {
+        converted: true,
+        segments: 1
+      };
+
+    } catch (_) {
+
+      return {
+        converted: false,
+        segments: 0
+      };
+    }
+  }
+
+
+  try {
+
+    /*
+     * Mixed Font까지 처리하기 위해
+     * styled segment 단위로 읽는다.
+     */
+    const segments =
+      node.getStyledTextSegments([
+        "fontName"
+      ]);
+
+
+    let convertedSegments = 0;
+
+
+    for (
+      const segment of segments
+    ) {
+
+      let sourceStyle =
+        "Regular";
+
+
+      if (
+        segment.fontName &&
+        segment.fontName !==
+          figma.mixed
+      ) {
+
+        sourceStyle =
+          segment.fontName.style;
+      }
+
+
+      const requestedStyle =
+        mapFontStyleToInter(
+          sourceStyle
+        );
+
+
+      const loadedStyle =
+        await loadInterStyle(
+          requestedStyle
+        );
+
+
+      try {
+
+        node.setRangeFontName(
+          segment.start,
+          segment.end,
+          {
+            family: "Inter",
+            style: loadedStyle
+          }
+        );
+
+
+        convertedSegments++;
+
+      } catch (error) {
+
+        console.warn(
+          "Range font conversion failed:",
+          node.name,
+          error
+        );
+      }
+    }
+
+
+    return {
+      converted:
+        convertedSegments > 0,
+
+      segments:
+        convertedSegments
+    };
+
+
+  } catch (error) {
+
+    /*
+     * Styled segment API 예외 시
+     * 전체 Regular fallback
+     */
+    console.warn(
+      "Styled segment conversion failed:",
+      node.name,
+      error
+    );
+
+
+    try {
+
+      const style =
+        await loadInterStyle(
+          "Regular"
+        );
+
+
+      node.fontName = {
+        family: "Inter",
+        style
+      };
+
+
+      return {
+        converted: true,
+        segments: 1
+      };
+
+
+    } catch (fallbackError) {
+
+      console.warn(
+        "Inter fallback failed:",
+        node.name,
+        fallbackError
+      );
+
+
+      return {
+        converted: false,
+        segments: 0
+      };
+    }
+  }
 }
 
 
@@ -420,43 +864,63 @@ function hasImageFill(node) {
 function normalizeLayerName(node) {
 
   /*
-   * 실제 화면 Text는 수정하지 않는다.
-   *
-   * characters 절대 변경 X
+   * Text
    */
-  if (node.type === "TEXT") {
+  if (
+    node.type === "TEXT"
+  ) {
+
     node.name = "-";
+
     return;
   }
 
 
-  if (node.type === "LINE") {
+  /*
+   * Line
+   */
+  if (
+    node.type === "LINE"
+  ) {
+
     node.name = "line";
+
     return;
   }
 
 
-  if (isIconType(node)) {
+  /*
+   * Icon / Vector
+   */
+  if (
+    isIconType(node)
+  ) {
+
     node.name = "icon";
+
     return;
   }
 
 
-  if (node.type === "RECTANGLE") {
+  /*
+   * Rectangle
+   */
+  if (
+    node.type === "RECTANGLE"
+  ) {
 
-    if (hasImageFill(node)) {
-      node.name = "image";
+    if (
+      hasImageFill(node)
+    ) {
+
+      node.name =
+        "image";
+
     } else {
-      node.name = "shape";
+
+      node.name =
+        "shape";
     }
-
-    return;
-  }
-
-
-  if (node.type === "IMAGE") {
-    node.name = "image";
-    return;
   }
 }
 
@@ -465,19 +929,29 @@ function normalizeLayerName(node) {
    Instance Detach
 ========================================================= */
 
-function detachInstancesRecursive(parent, stats) {
+function detachInstancesRecursive(
+  parent,
+  stats
+) {
 
-  if (!hasChildren(parent)) {
+  if (
+    !hasChildren(parent)
+  ) {
+
     return;
   }
+
 
   const children =
     [...parent.children];
 
 
-  for (const child of children) {
+  for (
+    const child of children
+  ) {
 
-    let target = child;
+    let target =
+      child;
 
 
     if (
@@ -489,6 +963,7 @@ function detachInstancesRecursive(parent, stats) {
         target =
           child.detachInstance();
 
+
         stats.detachedInstances++;
 
       } catch (error) {
@@ -499,16 +974,20 @@ function detachInstancesRecursive(parent, stats) {
           error
         );
 
+
         /*
-         * Detach 실패 시
-         * 해당 Instance는 나중에 Bake 대상으로 사용
+         * 실패한 Instance는
+         * 이후 Bake될 수 있도록 그대로 둔다.
          */
         continue;
       }
     }
 
 
-    if (hasChildren(target)) {
+    if (
+      hasChildren(target)
+    ) {
+
       detachInstancesRecursive(
         target,
         stats
@@ -519,34 +998,50 @@ function detachInstancesRecursive(parent, stats) {
 
 
 /* =========================================================
-   Visual Shell Snapshot
+   Container Visual
 ========================================================= */
 
-/**
- * Frame 자체의 Fill / Stroke 등
- * Visual 정보를 저장한다.
- *
- * Frame을 제거하더라도
- * Rectangle로 재현할 수 있도록 한다.
- */
-function snapshotContainerVisual(node) {
+function snapshotContainerVisual(
+  node
+) {
 
   const data = {
-    width: node.width,
-    height: node.height,
+
+    width:
+      node.width,
+
+    height:
+      node.height,
 
     absoluteTransform:
       node.absoluteTransform,
 
-    fills: null,
-    strokes: null,
-    strokeWeight: null,
-    strokeAlign: null,
+    fills:
+      null,
 
-    topLeftRadius: 0,
-    topRightRadius: 0,
-    bottomLeftRadius: 0,
-    bottomRightRadius: 0
+    strokes:
+      null,
+
+    strokeWeight:
+      null,
+
+    strokeAlign:
+      null,
+
+    effects:
+      null,
+
+    topLeftRadius:
+      0,
+
+    topRightRadius:
+      0,
+
+    bottomLeftRadius:
+      0,
+
+    bottomRightRadius:
+      0
   };
 
 
@@ -554,6 +1049,7 @@ function snapshotContainerVisual(node) {
     "fills" in node &&
     node.fills !== figma.mixed
   ) {
+
     data.fills =
       node.fills;
   }
@@ -563,6 +1059,7 @@ function snapshotContainerVisual(node) {
     "strokes" in node &&
     node.strokes !== figma.mixed
   ) {
+
     data.strokes =
       node.strokes;
   }
@@ -571,6 +1068,7 @@ function snapshotContainerVisual(node) {
   if (
     "strokeWeight" in node
   ) {
+
     data.strokeWeight =
       node.strokeWeight;
   }
@@ -579,8 +1077,19 @@ function snapshotContainerVisual(node) {
   if (
     "strokeAlign" in node
   ) {
+
     data.strokeAlign =
       node.strokeAlign;
+  }
+
+
+  if (
+    "effects" in node &&
+    node.effects !== figma.mixed
+  ) {
+
+    data.effects =
+      node.effects;
   }
 
 
@@ -589,27 +1098,34 @@ function snapshotContainerVisual(node) {
     if (
       "topLeftRadius" in node
     ) {
+
       data.topLeftRadius =
         node.topLeftRadius;
     }
 
+
     if (
       "topRightRadius" in node
     ) {
+
       data.topRightRadius =
         node.topRightRadius;
     }
 
+
     if (
       "bottomLeftRadius" in node
     ) {
+
       data.bottomLeftRadius =
         node.bottomLeftRadius;
     }
 
+
     if (
       "bottomRightRadius" in node
     ) {
+
       data.bottomRightRadius =
         node.bottomRightRadius;
     }
@@ -622,7 +1138,7 @@ function snapshotContainerVisual(node) {
 
 
 /* =========================================================
-   Create Visual Shell
+   Visual Shell
 ========================================================= */
 
 function createVisualShell(
@@ -647,23 +1163,32 @@ function createVisualShell(
   );
 
 
-  rect.name = "shape";
+  rect.name =
+    "shape";
 
 
-  if (snapshot.fills !== null) {
+  if (
+    snapshot.fills !== null
+  ) {
 
     try {
+
       rect.fills =
         snapshot.fills;
+
     } catch (_) {}
   }
 
 
-  if (snapshot.strokes !== null) {
+  if (
+    snapshot.strokes !== null
+  ) {
 
     try {
+
       rect.strokes =
         snapshot.strokes;
+
     } catch (_) {}
   }
 
@@ -673,8 +1198,10 @@ function createVisualShell(
   ) {
 
     try {
+
       rect.strokeWeight =
         snapshot.strokeWeight;
+
     } catch (_) {}
   }
 
@@ -684,8 +1211,23 @@ function createVisualShell(
   ) {
 
     try {
+
       rect.strokeAlign =
         snapshot.strokeAlign;
+
+    } catch (_) {}
+  }
+
+
+  if (
+    snapshot.effects !== null
+  ) {
+
+    try {
+
+      rect.effects =
+        snapshot.effects;
+
     } catch (_) {}
   }
 
@@ -707,7 +1249,9 @@ function createVisualShell(
   } catch (_) {}
 
 
-  root.appendChild(rect);
+  root.appendChild(
+    rect
+  );
 
 
   try {
@@ -721,7 +1265,7 @@ function createVisualShell(
   } catch (error) {
 
     console.warn(
-      "Visual shell transform failed",
+      "Shell transform failed:",
       error
     );
   }
@@ -735,14 +1279,9 @@ function createVisualShell(
    Bake
 ========================================================= */
 
-/**
- * Mask / Clip / Composite 영역을
- * PNG 이미지 하나로 굽는다.
- *
- * 실제 화면 결과를 우선 보존하기 위한
- * fallback 방식이다.
- */
-async function createBakeSnapshot(node) {
+async function createBakeSnapshot(
+  node
+) {
 
   const bounds =
     node.absoluteRenderBounds ||
@@ -754,15 +1293,20 @@ async function createBakeSnapshot(node) {
     bounds.width <= 0 ||
     bounds.height <= 0
   ) {
+
     return null;
   }
 
 
   try {
 
+    /*
+     * 2배 PNG Export
+     */
     const bytes =
       await node.exportAsync({
         format: "PNG",
+
         constraint: {
           type: "SCALE",
           value: 2
@@ -771,15 +1315,23 @@ async function createBakeSnapshot(node) {
 
 
     return {
+
       bytes,
 
-      x: bounds.x,
-      y: bounds.y,
+      x:
+        bounds.x,
 
-      width: bounds.width,
-      height: bounds.height,
+      y:
+        bounds.y,
 
-      sourceName: node.name
+      width:
+        bounds.width,
+
+      height:
+        bounds.height,
+
+      sourceName:
+        node.name
     };
 
 
@@ -791,15 +1343,12 @@ async function createBakeSnapshot(node) {
       error
     );
 
+
     return null;
   }
 }
 
 
-/**
- * 저장해둔 PNG를
- * Rectangle Image Fill로 만든다.
- */
 function createBakedImage(
   snapshot,
   root
@@ -822,7 +1371,8 @@ function createBakedImage(
       figma.createRectangle();
 
 
-    rect.name = "image";
+    rect.name =
+      "image";
 
 
     rect.resize(
@@ -840,14 +1390,21 @@ function createBakedImage(
 
     rect.fills = [
       {
-        type: "IMAGE",
-        scaleMode: "FILL",
-        imageHash: image.hash
+        type:
+          "IMAGE",
+
+        scaleMode:
+          "FILL",
+
+        imageHash:
+          image.hash
       }
     ];
 
 
-    root.appendChild(rect);
+    root.appendChild(
+      rect
+    );
 
 
     rect.relativeTransform =
@@ -864,9 +1421,10 @@ function createBakedImage(
   } catch (error) {
 
     console.warn(
-      "Failed to create baked image:",
+      "Create baked image failed:",
       error
     );
+
 
     return null;
   }
@@ -874,39 +1432,64 @@ function createBakedImage(
 
 
 /* =========================================================
-   Plan Builder
+   Build Flatten Plan
 ========================================================= */
 
-/**
- * 바로 Node를 옮기지 않는다.
- *
- * 먼저 모든 구조를 분석해서
- * 최종 1 Depth 결과를 Plan으로 만든다.
- *
- * 이유:
- * Mask 등을 export하기 전에
- * 다른 Layer를 먼저 부모 밖으로 옮겨버리면
- * 원본 Visual이 바뀔 수 있기 때문이다.
- */
 async function buildFlattenPlan(
   root,
   stats
 ) {
 
-  const plan = [];
+  const plan =
+    [];
 
 
   async function visit(node) {
 
     /*
-     * Garbage
+     * Garbage 후보
      */
-    if (isDefinitelyGarbage(node)) {
+    if (
+      isDefinitelyGarbage(node)
+    ) {
 
+      /*
+       * 사용자가 체크한 Garbage만 삭제
+       */
+      if (
+        approvedGarbageIds.has(
+          node.id
+        )
+      ) {
+
+        plan.push({
+          type:
+            "garbage",
+
+          node
+        });
+
+
+        return;
+      }
+
+      /*
+       * 체크하지 않은 Garbage는
+       * 구조 정리에서도 제외하고 그대로 보존한다.
+       */
       plan.push({
-        type: "garbage",
-        node
+        type:
+          "preserve",
+
+        node,
+
+        garbageProtected:
+          true
       });
+
+
+      stats.protectedGarbage++;
+
 
       return;
     }
@@ -915,14 +1498,16 @@ async function buildFlattenPlan(
     /*
      * Container
      */
-    if (isContainer(node)) {
-
+    if (
+      isContainer(node)
+    ) {
 
       /*
-       * Clip / Mask / Effect 등
-       * 위험한 Composite
+       * Mask / Clip / Composite
        */
-      if (needsBake(node)) {
+      if (
+        needsBake(node)
+      ) {
 
         const baked =
           await createBakeSnapshot(
@@ -933,41 +1518,57 @@ async function buildFlattenPlan(
         if (baked) {
 
           plan.push({
-            type: "bake",
-            source: node,
-            snapshot: baked
+            type:
+              "bake",
+
+            source:
+              node,
+
+            snapshot:
+              baked
           });
 
+
           stats.bakedAreas++;
+
 
           return;
         }
 
 
         /*
-         * Bake 자체가 실패하면
-         * 강제로 뜯지 않고
-         * 해당 구조를 보존한다.
+         * Export 실패 시
+         * 화면 보호를 위해 그대로 보존
          */
         plan.push({
-          type: "preserve",
+          type:
+            "preserve",
+
           node
         });
 
+
         stats.preservedAreas++;
+
 
         return;
       }
 
 
       /*
-       * Frame 자체 Background
+       * Container 자체의 Background
        */
-      if (hasOwnVisual(node)) {
+      if (
+        hasOwnVisual(node)
+      ) {
 
         plan.push({
-          type: "shell",
-          source: node,
+          type:
+            "shell",
+
+          source:
+            node,
+
           snapshot:
             snapshotContainerVisual(
               node
@@ -977,17 +1578,21 @@ async function buildFlattenPlan(
 
 
       /*
-       * Child 순서대로 분석
+       * Child
        */
-      if (hasChildren(node)) {
+      if (
+        hasChildren(node)
+      ) {
 
         const children =
           [...node.children];
 
-        for (const child of children) {
+
+        for (
+          const child of children
+        ) {
 
           await visit(child);
-
         }
       }
 
@@ -997,30 +1602,61 @@ async function buildFlattenPlan(
 
 
     /*
-     * Mask Layer 단독
-     *
-     * Parent가 제대로 Bake되지 않은
-     * 예외에 대비
+     * Mask 자체가 예상치 못하게
+     * Leaf로 도달했을 경우
      */
     if (
       "isMask" in node &&
       node.isMask === true
     ) {
 
-      plan.push({
-        type: "garbage",
-        node
-      });
+      const baked =
+        await createBakeSnapshot(
+          node
+        );
+
+
+      if (baked) {
+
+        plan.push({
+          type:
+            "bake",
+
+          source:
+            node,
+
+          snapshot:
+            baked
+        });
+
+
+        stats.bakedAreas++;
+
+      } else {
+
+        plan.push({
+          type:
+            "preserve",
+
+          node
+        });
+
+
+        stats.preservedAreas++;
+      }
+
 
       return;
     }
 
 
     /*
-     * 일반 Leaf
+     * Normal leaf
      */
     plan.push({
-      type: "leaf",
+
+      type:
+        "leaf",
 
       node,
 
@@ -1030,16 +1666,15 @@ async function buildFlattenPlan(
   }
 
 
-  const topChildren =
+  const children =
     [...root.children];
 
 
   for (
-    const child of topChildren
+    const child of children
   ) {
 
     await visit(child);
-
   }
 
 
@@ -1048,55 +1683,45 @@ async function buildFlattenPlan(
 
 
 /* =========================================================
-   Execute Plan
+   Execute Flatten Plan
 ========================================================= */
 
-function executeFlattenPlan(
+async function executeFlattenPlan(
   root,
   plan,
   stats
 ) {
 
-  /*
-   * 원래 Root의 Child 기억
-   *
-   * 최종적으로 Container 정리 시 사용
-   */
   const originalChildren =
     [...root.children];
 
 
   /*
-   * Garbage 먼저 삭제하면
-   * 위험 Container export 결과가 영향을 받을 수 있는데,
-   * 이미 Plan 단계에서 export가 모두 끝났으므로
-   * 이제 삭제해도 된다.
+   * Garbage 삭제
    */
-  for (const item of plan) {
+  for (
+    const item of plan
+  ) {
 
     if (
-      item.type !== "garbage"
+      item.type !==
+      "garbage"
     ) {
+
       continue;
     }
 
 
     try {
 
-      if (
-        item.node &&
-        !item.node.removed
-      ) {
+      item.node.remove();
 
-        item.node.remove();
-
-        stats.removedGarbage++;
-      }
+      stats.removedGarbage++;
 
     } catch (error) {
 
       console.warn(
-        "Garbage delete failed",
+        "Garbage delete failed:",
         error
       );
     }
@@ -1104,33 +1729,29 @@ function executeFlattenPlan(
 
 
   /*
-   * Plan 순서대로 Root에 추가한다.
-   *
-   * Plan 순서 =
-   * 원래 Layer Paint 순서
-   *
-   * 따라서 Z-order도 최대한 보존된다.
+   * 결과 구성
    */
-  for (const item of plan) {
+  for (
+    const item of plan
+  ) {
 
-
-    /* ---------------------------------
-       Garbage
-    --------------------------------- */
 
     if (
-      item.type === "garbage"
+      item.type ===
+      "garbage"
     ) {
+
       continue;
     }
 
 
-    /* ---------------------------------
-       Visual Shell
-    --------------------------------- */
+    /* --------------------------------
+       Shell
+    -------------------------------- */
 
     if (
-      item.type === "shell"
+      item.type ===
+      "shell"
     ) {
 
       const shell =
@@ -1144,19 +1765,20 @@ function executeFlattenPlan(
 
         stats.visualShells++;
         stats.finalLayers++;
-
       }
+
 
       continue;
     }
 
 
-    /* ---------------------------------
+    /* --------------------------------
        Bake
-    --------------------------------- */
+    -------------------------------- */
 
     if (
-      item.type === "bake"
+      item.type ===
+      "bake"
     ) {
 
       const image =
@@ -1169,34 +1791,25 @@ function executeFlattenPlan(
       if (image) {
 
         stats.finalLayers++;
-
       }
+
 
       continue;
     }
 
 
-    /* ---------------------------------
+    /* --------------------------------
        Preserve
-    --------------------------------- */
+    -------------------------------- */
 
     if (
-      item.type === "preserve"
+      item.type ===
+      "preserve"
     ) {
 
-      /*
-       * 극히 드문 경우
-       *
-       * Export까지 실패했다면
-       * 화면 보존을 위해 Container 자체를
-       * Root 아래에 둔다.
-       *
-       * 따라서 이 경우만
-       * 완전한 1 Depth가 아닐 수 있다.
-       */
       try {
 
-        const abs =
+        const transform =
           item.node.absoluteTransform;
 
 
@@ -1207,7 +1820,7 @@ function executeFlattenPlan(
 
         item.node.relativeTransform =
           absoluteToRelative(
-            abs,
+            transform,
             root
           );
 
@@ -1217,7 +1830,7 @@ function executeFlattenPlan(
       } catch (error) {
 
         console.warn(
-          "Preserve failed",
+          "Preserve failed:",
           error
         );
       }
@@ -1227,36 +1840,32 @@ function executeFlattenPlan(
     }
 
 
-    /* ---------------------------------
-       Normal Leaf
-    --------------------------------- */
+    /* --------------------------------
+       Leaf
+    -------------------------------- */
 
     if (
-      item.type === "leaf"
+      item.type ===
+      "leaf"
     ) {
 
       const node =
         item.node;
 
 
-      if (
-        !node ||
-        node.removed
-      ) {
-        continue;
-      }
-
-
       try {
 
         /*
-         * 기존 위치 저장
-         * → Root Child로 이동
-         * → Absolute 위치 복원
+         * Parent 변경
          */
-        root.appendChild(node);
+        root.appendChild(
+          node
+        );
 
 
+        /*
+         * 화면 위치 복원
+         */
         node.relativeTransform =
           absoluteToRelative(
             item.absoluteTransform,
@@ -1265,21 +1874,38 @@ function executeFlattenPlan(
 
 
         /*
-         * Auto Layout 관련 속성의 영향을
-         * 더 이상 받지 않는다.
+         * TEXT라면 Inter 변환
          */
-        try {
+        if (
+          node.type ===
+          "TEXT"
+        ) {
+
+          const fontResult =
+            await convertTextNodeToInter(
+              node
+            );
+
 
           if (
-            "layoutPositioning" in node
+            fontResult.converted
           ) {
-            node.layoutPositioning =
-              "AUTO";
+
+            stats.convertedTexts++;
+
+            stats.convertedFontSegments +=
+              fontResult.segments;
+
+          } else {
+
+            stats.failedFontConversions++;
           }
+        }
 
-        } catch (_) {}
 
-
+        /*
+         * 이름 정규화
+         */
         normalizeLayerName(
           node
         );
@@ -1302,138 +1928,214 @@ function executeFlattenPlan(
 
 
   /*
-   * 최종 결과에 사용되지 않는
-   * 기존 Container 제거
+   * 원래 Container 제거
    */
   for (
     const child of originalChildren
   ) {
 
-    if (
-      !child ||
-      child.removed
-    ) {
-      continue;
-    }
+    try {
 
+      /*
+       * Root 아래에 여전히 존재하면서
+       * Preserve 대상이라면 삭제 금지
+       */
+      const preserved =
+        plan.some(
+          item => {
 
-    /*
-     * 이미 Root 아래의 Leaf로 이동된 경우
-     * 제거하면 안 된다.
-     */
-    const isResultLeaf =
-      plan.some(item => {
-        return (
-          item.type === "leaf" &&
-          item.node === child
+            return (
+              item.type ===
+                "preserve" &&
+              item.node ===
+                child
+            );
+          }
         );
-      });
 
 
-    const isPreserved =
-      plan.some(item => {
-        return (
-          item.type === "preserve" &&
-          item.node === child
+      if (preserved) {
+        continue;
+      }
+
+
+      /*
+       * 직접 Leaf였던 경우 역시 삭제 금지
+       */
+      const leaf =
+        plan.some(
+          item => {
+
+            return (
+              item.type ===
+                "leaf" &&
+              item.node ===
+                child
+            );
+          }
         );
-      });
 
 
-    if (
-      isResultLeaf ||
-      isPreserved
-    ) {
-      continue;
-    }
+      if (leaf) {
+        continue;
+      }
 
 
-    if (
-      isContainer(child)
-    ) {
-
-      try {
+      if (
+        isContainer(child)
+      ) {
 
         child.remove();
 
         stats.removedContainers++;
+      }
 
-      } catch (_) {}
-    }
+
+    } catch (_) {}
   }
 }
 
 
 /* =========================================================
-   Root Cleanup
+   Root
 ========================================================= */
 
 function prepareRoot(root) {
 
   /*
-   * Screen 자체는 남긴다.
+   * 선택한 Screen 자체는 유지한다.
    *
-   * Auto Layout Screen이라면
-   * 현재 Visual을 그대로 유지한 상태에서
-   * Layout Mode만 제거
+   * Root가 Auto Layout이면
+   * Layout만 제거한다.
    */
   if (
     "layoutMode" in root &&
-    root.layoutMode !== "NONE"
+    root.layoutMode !==
+      "NONE"
   ) {
 
     try {
-      root.layoutMode = "NONE";
+
+      root.layoutMode =
+        "NONE";
+
     } catch (_) {}
   }
 
 
   /*
-   * Root clip은 유지한다.
+   * Root clipsContent는 유지한다.
    *
-   * 화면 밖 Content가 갑자기 나타나면 안 되므로
-   * clipsContent 값은 변경하지 않는다.
+   * Screen 밖의 Content가 노출되는 것을
+   * 방지하기 위해서다.
    */
 }
 
 
 /* =========================================================
-   Analyze
+   Analysis
 ========================================================= */
 
-function analyzeScreen(root) {
+function analyzeScreen(
+  root
+) {
 
   const result = {
-    total: 0,
 
-    garbage: 0,
-    containers: 0,
+    total:
+      0,
 
-    instances: 0,
-    autoLayouts: 0,
+    garbage:
+      0,
 
-    masks: 0,
-    clips: 0,
+    garbageItems:
+      [],
 
-    text: 0,
-    icons: 0,
-    lines: 0,
+    containers:
+      0,
 
-    bakeCandidates: 0
+    instances:
+      0,
+
+    autoLayouts:
+      0,
+
+    masks:
+      0,
+
+    clips:
+      0,
+
+    text:
+      0,
+
+    nonInterText:
+      0,
+
+    icons:
+      0,
+
+    lines:
+      0,
+
+    bakeCandidates:
+      0
   };
 
 
-  function walk(node) {
+  function walk(
+    node,
+    path
+  ) {
 
     result.total++;
 
 
+    const currentPath =
+      path
+        ? `${path} / ${node.name}`
+        : node.name;
+
+
+    /*
+     * Garbage
+     */
+    const garbageReason =
+      getGarbageReason(
+        node
+      );
+
+
     if (
-      isDefinitelyGarbage(node)
+      garbageReason
     ) {
+
       result.garbage++;
+
+
+      result.garbageItems.push({
+
+        id:
+          node.id,
+
+        name:
+          node.name,
+
+        type:
+          node.type,
+
+        reason:
+          garbageReason,
+
+        path:
+          currentPath
+      });
     }
 
 
+    /*
+     * Container
+     */
     if (
       node !== root &&
       isContainer(node)
@@ -1441,81 +2143,171 @@ function analyzeScreen(root) {
 
       result.containers++;
 
+
       if (
         needsBake(node)
       ) {
+
         result.bakeCandidates++;
       }
     }
 
 
+    /*
+     * Instance
+     */
     if (
-      node.type === "INSTANCE"
+      node.type ===
+      "INSTANCE"
     ) {
+
       result.instances++;
     }
 
 
+    /*
+     * Auto Layout
+     */
     if (
       "layoutMode" in node &&
-      node.layoutMode !== "NONE"
+      node.layoutMode !==
+        "NONE"
     ) {
+
       result.autoLayouts++;
     }
 
 
+    /*
+     * Mask
+     */
     if (
       "isMask" in node &&
       node.isMask === true
     ) {
+
       result.masks++;
     }
 
 
+    /*
+     * Clip Content
+     */
     if (
       node !== root &&
       "clipsContent" in node &&
       node.clipsContent === true
     ) {
+
       result.clips++;
     }
 
 
+    /*
+     * Text
+     */
     if (
-      node.type === "TEXT"
+      node.type ===
+      "TEXT"
     ) {
+
       result.text++;
+
+
+      /*
+       * Font가 전부 Inter인지 분석
+       */
+      try {
+
+        const segments =
+          node.getStyledTextSegments([
+            "fontName"
+          ]);
+
+
+        const hasNonInter =
+          segments.some(
+            segment => {
+
+              if (
+                !segment.fontName ||
+                segment.fontName ===
+                  figma.mixed
+              ) {
+
+                return true;
+              }
+
+
+              return (
+                segment.fontName.family !==
+                "Inter"
+              );
+            }
+          );
+
+
+        if (
+          hasNonInter
+        ) {
+
+          result.nonInterText++;
+        }
+
+      } catch (_) {
+
+        result.nonInterText++;
+      }
     }
 
 
+    /*
+     * Icon
+     */
     if (
       isIconType(node)
     ) {
+
       result.icons++;
     }
 
 
+    /*
+     * Line
+     */
     if (
-      node.type === "LINE"
+      node.type ===
+      "LINE"
     ) {
+
       result.lines++;
     }
 
 
-    if (hasChildren(node)) {
+    /*
+     * Child
+     */
+    if (
+      hasChildren(node)
+    ) {
 
       for (
         const child of node.children
       ) {
 
-        walk(child);
-
+        walk(
+          child,
+          currentPath
+        );
       }
     }
   }
 
 
-  walk(root);
+  walk(
+    root,
+    ""
+  );
 
 
   return result;
@@ -1523,37 +2315,56 @@ function analyzeScreen(root) {
 
 
 /* =========================================================
-   Main Clean
+   Clean
 ========================================================= */
 
-async function cleanScreen(root) {
+async function cleanScreen(
+  root
+) {
 
   const stats = {
 
-    detachedInstances: 0,
+    detachedInstances:
+      0,
 
-    removedGarbage: 0,
+    removedGarbage:
+      0,
 
-    removedContainers: 0,
+    protectedGarbage:
+      0,
 
-    movedLayers: 0,
+    removedContainers:
+      0,
 
-    visualShells: 0,
+    movedLayers:
+      0,
 
-    bakedAreas: 0,
+    visualShells:
+      0,
 
-    preservedAreas: 0,
+    bakedAreas:
+      0,
 
-    finalLayers: 0
+    preservedAreas:
+      0,
+
+    convertedTexts:
+      0,
+
+    convertedFontSegments:
+      0,
+
+    failedFontConversions:
+      0,
+
+    finalLayers:
+      0
   };
 
 
   /*
    * 1.
-   * Instance를 먼저 Detach
-   *
-   * Instance 내부 Child는 직접 이동이
-   * 제한될 수 있기 때문
+   * Instance Detach
    */
   detachInstancesRecursive(
     root,
@@ -1563,10 +2374,7 @@ async function cleanScreen(root) {
 
   /*
    * 2.
-   * 현재 Visual 기준 Plan 생성
-   *
-   * Bake가 필요한 영역은
-   * 이 단계에서 PNG 추출
+   * 구조 변경 전에 Plan 작성
    */
   const plan =
     await buildFlattenPlan(
@@ -1579,14 +2387,16 @@ async function cleanScreen(root) {
    * 3.
    * Root Auto Layout 제거
    */
-  prepareRoot(root);
+  prepareRoot(
+    root
+  );
 
 
   /*
    * 4.
-   * 실제 구조 변경
+   * Plan 실행
    */
-  executeFlattenPlan(
+  await executeFlattenPlan(
     root,
     plan,
     stats
@@ -1598,15 +2408,20 @@ async function cleanScreen(root) {
 
 
 /* =========================================================
-   Message Handler
+   UI Message
 ========================================================= */
 
 figma.ui.onmessage =
 async (msg) => {
 
 
+  /* =====================================================
+     Close
+  ===================================================== */
+
   if (
-    msg.type === "close"
+    msg.type ===
+    "close"
   ) {
 
     figma.closePlugin();
@@ -1614,6 +2429,66 @@ async (msg) => {
     return;
   }
 
+
+  /* =====================================================
+     Select Layer
+  ===================================================== */
+
+  if (
+    msg.type ===
+    "select-layer"
+  ) {
+
+    try {
+
+      const node =
+        await figma.getNodeByIdAsync(
+          msg.nodeId
+        );
+
+
+      if (!node) {
+        return;
+      }
+
+
+      if (
+        node.type ===
+          "DOCUMENT" ||
+        node.type ===
+          "PAGE"
+      ) {
+
+        return;
+      }
+
+
+      figma.currentPage.selection =
+        [node];
+
+
+      figma.viewport
+        .scrollAndZoomIntoView(
+          [node]
+        );
+
+
+    } catch (error) {
+
+      console.warn(
+        "Layer selection failed:",
+        error
+      );
+    }
+
+
+    return;
+  }
+
+
+  /* =====================================================
+     Selection Validation
+  ===================================================== */
 
   const selection =
     figma.currentPage.selection;
@@ -1624,26 +2499,31 @@ async (msg) => {
   ) {
 
     figma.ui.postMessage({
-      type: "error",
+
+      type:
+        "error",
 
       message:
         "정리할 Screen Frame을 선택해주세요."
     });
 
+
     return;
   }
 
 
-  /*
-   * 최상위 Screen 단위 작업 권장
-   */
   const roots =
-    selection.filter(node => {
-      return (
-        node.type === "FRAME" ||
-        node.type === "COMPONENT"
-      );
-    });
+    selection.filter(
+      node => {
+
+        return (
+          node.type ===
+            "FRAME" ||
+          node.type ===
+            "COMPONENT"
+        );
+      }
+    );
 
 
   if (
@@ -1652,39 +2532,50 @@ async (msg) => {
   ) {
 
     figma.ui.postMessage({
-      type: "error",
+
+      type:
+        "error",
 
       message:
-        "Screen Frame 또는 Component만 선택해주세요."
+        "최상위 Screen Frame 또는 Component만 선택해주세요."
     });
+
 
     return;
   }
 
 
   /* =====================================================
-     ANALYZE
+     Analyze
   ===================================================== */
 
   if (
-    msg.type === "analyze"
+    msg.type ===
+    "analyze"
   ) {
 
     const results =
-      roots.map(root => {
+      roots.map(
+        root => {
 
-        return {
-          name: root.name,
+          return {
 
-          ...analyzeScreen(
-            root
-          )
-        };
-      });
+            name:
+              root.name,
+
+            ...analyzeScreen(
+              root
+            )
+          };
+        }
+      );
 
 
     figma.ui.postMessage({
-      type: "analysis",
+
+      type:
+        "analysis",
+
       results
     });
 
@@ -1694,15 +2585,24 @@ async (msg) => {
 
 
   /* =====================================================
-     CLEAN
+     Clean
   ===================================================== */
 
   if (
-    msg.type === "clean"
+    msg.type ===
+    "clean"
   ) {
 
+    approvedGarbageIds =
+      new Set(
+        msg.garbageIds || []
+      );
+
+
     figma.ui.postMessage({
-      type: "processing"
+
+      type:
+        "processing"
     });
 
 
@@ -1711,25 +2611,53 @@ async (msg) => {
       screens:
         roots.length,
 
-      detachedInstances: 0,
+      detachedInstances:
+        0,
 
-      removedGarbage: 0,
+      removedGarbage:
+        0,
 
-      removedContainers: 0,
+      protectedGarbage:
+        0,
 
-      movedLayers: 0,
+      removedContainers:
+        0,
 
-      visualShells: 0,
+      movedLayers:
+        0,
 
-      bakedAreas: 0,
+      visualShells:
+        0,
 
-      preservedAreas: 0,
+      bakedAreas:
+        0,
 
-      finalLayers: 0
+      preservedAreas:
+        0,
+
+      convertedTexts:
+        0,
+
+      convertedFontSegments:
+        0,
+
+      failedFontConversions:
+        0,
+
+      finalLayers:
+        0
     };
 
 
     try {
+
+      /*
+       * Inter Regular을 우선 Load
+       */
+      await loadInterStyle(
+        "Regular"
+      );
+
 
       for (
         const root of roots
@@ -1741,35 +2669,23 @@ async (msg) => {
           );
 
 
-        total.detachedInstances +=
-          result.detachedInstances;
+        for (
+          const key of Object.keys(
+            result
+          )
+        ) {
 
-        total.removedGarbage +=
-          result.removedGarbage;
+          if (
+            key in total
+          ) {
 
-        total.removedContainers +=
-          result.removedContainers;
-
-        total.movedLayers +=
-          result.movedLayers;
-
-        total.visualShells +=
-          result.visualShells;
-
-        total.bakedAreas +=
-          result.bakedAreas;
-
-        total.preservedAreas +=
-          result.preservedAreas;
-
-        total.finalLayers +=
-          result.finalLayers;
+            total[key] +=
+              result[key];
+          }
+        }
       }
 
 
-      /*
-       * Screen을 다시 선택
-       */
       figma.currentPage.selection =
         roots;
 
@@ -1781,13 +2697,17 @@ async (msg) => {
 
 
       figma.ui.postMessage({
-        type: "complete",
-        result: total
+
+        type:
+          "complete",
+
+        result:
+          total
       });
 
 
       figma.notify(
-        `Cleanup 완료 · ${total.finalLayers}개 최종 Layer`
+        `Cleanup 완료 · Text ${total.convertedTexts}개 Inter 변환`
       );
 
 
@@ -1799,7 +2719,9 @@ async (msg) => {
 
 
       figma.ui.postMessage({
-        type: "error",
+
+        type:
+          "error",
 
         message:
           "Cleanup 중 오류가 발생했습니다.\n\n" +
@@ -1811,5 +2733,8 @@ async (msg) => {
           )
       });
     }
+
+
+    return;
   }
 };
