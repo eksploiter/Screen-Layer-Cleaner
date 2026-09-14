@@ -34,6 +34,10 @@ body {
 }
 
 
+/* =========================================================
+   Header
+========================================================= */
+
 .header {
   margin-bottom: 18px;
 }
@@ -62,9 +66,9 @@ body {
 }
 
 
-/* =====================================================
+/* =========================================================
    Card
-===================================================== */
+========================================================= */
 
 .card {
 
@@ -93,6 +97,8 @@ body {
 
   min-height: 27px;
 
+  gap: 12px;
+
   font-size: 12px;
 }
 
@@ -106,13 +112,55 @@ body {
 
 .value {
 
+  text-align: right;
+
   font-weight: 600;
 }
 
 
-/* =====================================================
+/* =========================================================
+   Option
+========================================================= */
+
+.option-row {
+
+  margin-top: 11px;
+
+  padding-top: 11px;
+
+  border-top:
+    1px solid
+    var(--figma-color-border);
+}
+
+
+.option-label {
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 8px;
+
+  font-size: 12px;
+
+  cursor: pointer;
+}
+
+
+.option-label input {
+
+  width: 14px;
+
+  height: 14px;
+
+  margin: 0;
+}
+
+
+/* =========================================================
    Buttons
-===================================================== */
+========================================================= */
 
 button {
 
@@ -141,7 +189,7 @@ button {
 
 
 .main-button:hover {
-  opacity: 0.88;
+  opacity: 0.9;
 }
 
 
@@ -177,19 +225,21 @@ button {
 }
 
 
-/* =====================================================
+/* =========================================================
    Result
-===================================================== */
+========================================================= */
 
 #result {
 
   display: none;
 
-  margin-top: 12px;
+  margin-top: 9px;
+
+  margin-bottom: 12px;
 
   padding: 13px;
 
-  max-height: 230px;
+  max-height: 245px;
 
   overflow-y: auto;
 
@@ -199,7 +249,7 @@ button {
 
   font-size: 12px;
 
-  line-height: 1.6;
+  line-height: 1.55;
 }
 
 
@@ -239,13 +289,13 @@ button {
 }
 
 
-/* =====================================================
+/* =========================================================
    Garbage
-===================================================== */
+========================================================= */
 
 #garbageSection {
 
-  margin-top: 10px;
+  margin-top: 7px;
 
   margin-bottom: 12px;
 }
@@ -263,7 +313,8 @@ button {
 
   align-items: center;
 
-  justify-content: space-between;
+  justify-content:
+    space-between;
 
   border:
     1px solid
@@ -280,13 +331,6 @@ button {
   font-size: 12px;
 
   font-weight: 600;
-}
-
-
-.garbage-toggle:hover {
-
-  background:
-    var(--figma-color-bg-hover);
 }
 
 
@@ -332,7 +376,7 @@ button {
 
   margin-top: 7px;
 
-  max-height: 280px;
+  max-height: 290px;
 
   overflow-y: auto;
 
@@ -355,13 +399,14 @@ button {
 
   top: 0;
 
-  z-index: 5;
+  z-index: 10;
 
   display: flex;
 
   align-items: center;
 
-  justify-content: space-between;
+  justify-content:
+    space-between;
 
   padding: 9px 10px;
 
@@ -399,13 +444,6 @@ button {
 }
 
 
-.small-action:hover {
-
-  background:
-    var(--figma-color-bg-hover);
-}
-
-
 .garbage-item {
 
   display: flex;
@@ -423,7 +461,6 @@ button {
 
 
 .garbage-item:last-child {
-
   border-bottom: none;
 }
 
@@ -506,16 +543,9 @@ button {
 }
 
 
-.layer-view:hover {
-
-  background:
-    var(--figma-color-bg-hover);
-}
-
-
-/* =====================================================
+/* =========================================================
    Note
-===================================================== */
+========================================================= */
 
 .note {
 
@@ -551,14 +581,28 @@ button {
   </h1>
 
   <p class="subtitle">
-    화면 구조를 정리하고
-    Text Font를 Inter로 통일합니다.
+    화면의 Visual을 최대한 유지하면서
+    Screen 내부 Layer를 정리합니다.
   </p>
 
 </div>
 
 
 <div class="card">
+
+
+  <div class="row">
+
+    <span class="label">
+      Root
+    </span>
+
+    <span class="value">
+      → Frame
+    </span>
+
+  </div>
+
 
   <div class="row">
 
@@ -581,6 +625,19 @@ button {
 
     <span class="value">
       1 Depth
+    </span>
+
+  </div>
+
+
+  <div class="row">
+
+    <span class="label">
+      Layer Order
+    </span>
+
+    <span class="value">
+      ↓ then →
     </span>
 
   </div>
@@ -645,7 +702,7 @@ button {
     </span>
 
     <span class="value">
-      -
+      Optional "-"
     </span>
 
   </div>
@@ -686,6 +743,37 @@ button {
     <span class="value">
       shape
     </span>
+
+  </div>
+
+
+  <div class="row">
+
+    <span class="label">
+      Screenshot
+    </span>
+
+    <span class="value">
+      screenshot
+    </span>
+
+  </div>
+
+
+  <div class="option-row">
+
+    <label class="option-label">
+
+      <input
+        id="renameTextOption"
+        type="checkbox"
+      />
+
+      <span>
+        Text Layer 이름을 "-"로 변경
+      </span>
+
+    </label>
 
   </div>
 
@@ -752,43 +840,52 @@ button {
 <div class="note">
 
   <strong>
+    Garbage Review
+  </strong>
+
+  <br>
+
+  Analyze 후 Garbage 후보를 펼쳐
+  삭제 전 직접 확인할 수 있습니다.
+
+  <br>
+
+  체크를 해제한 Layer는 삭제하지 않습니다.
+
+  <br><br>
+
+  <strong>
     Font Conversion
   </strong>
 
   <br>
 
-  모든 일반 Text Layer의 Font Family를
-  Inter로 변경합니다.
-
-  <br>
-
-  기존 Bold, Medium, Light, Italic 등의
-  스타일은 가능한 한 대응되는
-  Inter 스타일로 유지합니다.
+  일반 Text Layer의 Font Family를
+  Inter로 변경하며 기존 Weight / Italic은
+  가능한 한 대응되는 Inter Style로 유지합니다.
 
   <br><br>
 
   <strong>
-    Garbage Protection
+    Layer Order
   </strong>
 
   <br>
 
-  Analyze 후 Garbage Candidates를 펼쳐
-  삭제 대상을 직접 확인할 수 있습니다.
+  화면상 위에서 아래,
+  같은 줄에서는 왼쪽에서 오른쪽 순서로 정리합니다.
 
-  <br>
-
-  체크를 해제한 Layer는 삭제하지 않습니다.
+  겹쳐 있는 Layer는 화면의 앞뒤 관계 보호를 위해
+  기존 Z-order를 우선합니다.
 
 </div>
 
 
 <script>
 
-/* =====================================================
+/* =========================================================
    Elements
-===================================================== */
+========================================================= */
 
 const analyzeButton =
   document.getElementById(
@@ -832,13 +929,15 @@ const garbageArrow =
   );
 
 
-let garbageItems =
-  [];
+const renameTextOption =
+  document.getElementById(
+    "renameTextOption"
+  );
 
 
-/* =====================================================
+/* =========================================================
    Helpers
-===================================================== */
+========================================================= */
 
 function escapeHtml(
   value
@@ -873,6 +972,18 @@ function escapeHtml(
 }
 
 
+function setLoading(
+  loading
+) {
+
+  analyzeButton.disabled =
+    loading;
+
+  cleanButton.disabled =
+    loading;
+}
+
+
 function clearResult() {
 
   result.className =
@@ -886,58 +997,38 @@ function clearResult() {
 }
 
 
-function setLoading(
-  loading
-) {
-
-  analyzeButton.disabled =
-    loading;
-
-  cleanButton.disabled =
-    loading;
-}
-
-
-/* =====================================================
+/* =========================================================
    Garbage Toggle
-===================================================== */
+========================================================= */
 
 garbageToggle.onclick =
 () => {
 
-  garbageList
-    .classList
-    .toggle(
+  garbageList.classList.toggle(
+    "open"
+  );
+
+
+  const open =
+    garbageList.classList.contains(
       "open"
     );
 
 
-  const opened =
-    garbageList
-      .classList
-      .contains(
-        "open"
-      );
-
-
   garbageArrow.textContent =
-    opened
+    open
       ? "▲"
       : "▼";
 };
 
 
-/* =====================================================
-   Garbage Renderer
-===================================================== */
+/* =========================================================
+   Garbage Render
+========================================================= */
 
 function renderGarbageList(
   items
 ) {
-
-  garbageItems =
-    items;
-
 
   garbageCount.textContent =
     items.length;
@@ -1083,7 +1174,7 @@ function renderGarbageList(
 
 
   /*
-   * Layer Select
+   * Layer 보기
    */
   garbageList
     .querySelectorAll(
@@ -1095,10 +1186,6 @@ function renderGarbageList(
         button.onclick =
         event => {
 
-          /*
-           * Toggle 이벤트 등과
-           * 겹치지 않도록
-           */
           event.stopPropagation();
 
 
@@ -1122,7 +1209,7 @@ function renderGarbageList(
 
 
   /*
-   * Select All
+   * 전체 선택
    */
   document
     .getElementById(
@@ -1149,7 +1236,7 @@ function renderGarbageList(
 
 
   /*
-   * Deselect All
+   * 전체 해제
    */
   document
     .getElementById(
@@ -1176,9 +1263,9 @@ function renderGarbageList(
 }
 
 
-/* =====================================================
+/* =========================================================
    Analyze
-===================================================== */
+========================================================= */
 
 analyzeButton.onclick =
 () => {
@@ -1202,9 +1289,9 @@ analyzeButton.onclick =
 };
 
 
-/* =====================================================
+/* =========================================================
    Clean
-===================================================== */
+========================================================= */
 
 cleanButton.onclick =
 () => {
@@ -1212,9 +1299,6 @@ cleanButton.onclick =
   clearResult();
 
 
-  /*
-   * 체크된 Garbage ID
-   */
   const garbageIds =
     [];
 
@@ -1245,14 +1329,16 @@ cleanButton.onclick =
   result.textContent =
 `Cleaning Screen...
 
-선택된 Garbage
+삭제 승인 Garbage
 ${garbageIds.length}개
 
-Text Font
-→ Inter
+Typeface
+Inter
 
-Layer 구조를 정리하고 있습니다.`;
+Text Name
+${renameTextOption.checked ? "-" : "Keep Original"}
 
+Screen 구조를 정리하고 있습니다.`;
 
 
   parent.postMessage(
@@ -1262,7 +1348,10 @@ Layer 구조를 정리하고 있습니다.`;
         type:
           "clean",
 
-        garbageIds
+        garbageIds,
+
+        renameTextToHyphen:
+          renameTextOption.checked
       }
     },
     "*"
@@ -1270,9 +1359,9 @@ Layer 구조를 정리하고 있습니다.`;
 };
 
 
-/* =====================================================
+/* =========================================================
    Figma → UI
-===================================================== */
+========================================================= */
 
 onmessage =
 event => {
@@ -1286,9 +1375,9 @@ event => {
   }
 
 
-  /* -------------------------------------------------
+  /* -----------------------------------------------------
      Processing
-  ------------------------------------------------- */
+  ----------------------------------------------------- */
 
   if (
     msg.type ===
@@ -1304,9 +1393,9 @@ event => {
   }
 
 
-  /* -------------------------------------------------
+  /* -----------------------------------------------------
      Error
-  ------------------------------------------------- */
+  ----------------------------------------------------- */
 
   if (
     msg.type ===
@@ -1330,9 +1419,9 @@ event => {
   }
 
 
-  /* -------------------------------------------------
+  /* -----------------------------------------------------
      Analysis
-  ------------------------------------------------- */
+  ----------------------------------------------------- */
 
   if (
     msg.type ===
@@ -1353,12 +1442,19 @@ event => {
 
 
     for (
-      const data of
-      msg.results
+      const data of msg.results
     ) {
 
       text +=
 `[${data.name}]
+
+Root Type
+${data.rootType}
+
+Root Conversion
+${data.willConvertToFrame
+  ? "→ Frame"
+  : "Already Frame"}
 
 Total Layer
 ${data.total}
@@ -1430,9 +1526,9 @@ ${data.bakeCandidates}
   }
 
 
-  /* -------------------------------------------------
+  /* -----------------------------------------------------
      Complete
-  ------------------------------------------------- */
+  ----------------------------------------------------- */
 
   if (
     msg.type ===
@@ -1458,6 +1554,9 @@ ${data.bakeCandidates}
 Screen
 ${r.screens}
 
+Root → Frame
+${r.rootConversions}
+
 Detached Instance
 ${r.detachedInstances}
 
@@ -1476,7 +1575,7 @@ ${r.movedLayers}
 Text → Inter
 ${r.convertedTexts}
 
-Font Style Segments
+Font Segments
 ${r.convertedFontSegments}
 
 Font Conversion Failed
@@ -1485,19 +1584,22 @@ ${r.failedFontConversions}
 Visual Shell
 ${r.visualShells}
 
-Mask / Clip Bake
+Screenshot Bake
 ${r.bakedAreas}
 
 Preserved Exception
 ${r.preservedAreas}
 
 Final Layer
-${r.finalLayers}`;
+${r.finalLayers}
+
+Layer Order
+Top → Bottom / Left → Right`;
 
 
     /*
-     * 이미 구조가 바뀌었으므로
-     * Garbage 상세 리스트 초기화
+     * 구조가 변경되었으므로
+     * 이전 Garbage 목록 초기화.
      */
     renderGarbageList(
       []
