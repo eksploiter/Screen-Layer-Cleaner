@@ -1,0 +1,8 @@
+{
+  "name": "Screen Layer Cleaner",
+  "id": "screen-layer-cleaner",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"]
+}
