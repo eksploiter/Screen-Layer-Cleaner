@@ -608,7 +608,7 @@ button:disabled {
   <br>
 
   Cleanup 전후의 렌더링 결과가 다르면
-  모든 변경사항을 자동으로 Rollback합니다.
+  해당 작업을 Rollback합니다.
 
 </div>
 
@@ -618,6 +618,11 @@ button:disabled {
   <div class="row">
     <span class="label">Root</span>
     <span class="value">→ Frame</span>
+  </div>
+
+  <div class="row">
+    <span class="label">Root Name</span>
+    <span class="value">Preserve</span>
   </div>
 
   <div class="row">
@@ -641,7 +646,7 @@ button:disabled {
   </div>
 
   <div class="row">
-    <span class="label">Frame / Auto Layout</span>
+    <span class="label">Frame / Group / Auto Layout</span>
     <span class="value">Flatten</span>
   </div>
 
@@ -696,6 +701,20 @@ button:disabled {
 
       <span>
         Text Layer 이름을 "-"로 변경
+      </span>
+
+    </label>
+
+
+    <label class="option-label">
+
+      <input
+        id="renameContainersOption"
+        type="checkbox"
+      />
+
+      <span>
+        Frame / Group / Auto Layout 이름 정리
       </span>
 
     </label>
@@ -769,6 +788,13 @@ button:disabled {
 
   <br><br>
 
+  <strong>Naming</strong><br>
+  대표 Screen 이름은 항상 유지합니다.<br>
+  Frame / Group / Auto Layout 이름 정리는
+  옵션으로 선택할 수 있습니다.
+
+  <br><br>
+
   <strong>Layer Order</strong><br>
   겹치지 않는 Layer는 위→아래,
   같은 줄에서는 좌→우로 정리합니다.
@@ -779,7 +805,7 @@ button:disabled {
   <strong>Visual Verification</strong><br>
   원본에 직접 작업하지 않습니다.
   복제본에서 Cleanup 후 PNG 렌더 결과를 비교하고,
-  Visual이 같을 때만 결과를 적용합니다.
+  Visual이 같은 작업만 적용합니다.
 
 </div>
 
@@ -795,44 +821,58 @@ const analyzeButton =
     "analyze"
   );
 
+
 const cleanButton =
   document.getElementById(
     "clean"
   );
+
 
 const result =
   document.getElementById(
     "result"
   );
 
+
 const garbageToggle =
   document.getElementById(
     "garbageToggle"
   );
+
 
 const garbageList =
   document.getElementById(
     "garbageList"
   );
 
+
 const garbageCount =
   document.getElementById(
     "garbageCount"
   );
+
 
 const garbageArrow =
   document.getElementById(
     "garbageArrow"
   );
 
+
 const renameTextOption =
   document.getElementById(
     "renameTextOption"
   );
 
+
 const fontOption =
   document.getElementById(
     "fontOption"
+  );
+
+
+const renameContainersOption =
+  document.getElementById(
+    "renameContainersOption"
   );
 
 
@@ -911,11 +951,15 @@ function renderGarbageList(items) {
     garbageToggle.style.display =
       "none";
 
+
     garbageList.classList.remove(
       "open"
     );
 
-    garbageList.innerHTML = "";
+
+    garbageList.innerHTML =
+      "";
+
 
     return;
   }
@@ -925,11 +969,14 @@ function renderGarbageList(items) {
     "flex";
 
 
-  garbageList.innerHTML = "";
+  garbageList.innerHTML =
+    "";
 
 
   const actions =
-    document.createElement("div");
+    document.createElement(
+      "div"
+    );
 
 
   actions.className =
@@ -1062,7 +1109,8 @@ function renderGarbageList(items) {
     .getElementById(
       "selectAllGarbage"
     )
-    .onclick = event => {
+    .onclick =
+    event => {
 
       event.stopPropagation();
 
@@ -1083,7 +1131,8 @@ function renderGarbageList(items) {
     .getElementById(
       "deselectAllGarbage"
     )
-    .onclick = event => {
+    .onclick =
+    event => {
 
       event.stopPropagation();
 
@@ -1116,6 +1165,7 @@ analyzeButton.onclick =
   parent.postMessage(
     {
       pluginMessage: {
+
         type:
           "analyze"
       }
@@ -1164,13 +1214,18 @@ cleanButton.onclick =
 Original은 유지한 상태로
 Working Copy에서 Cleanup을 진행합니다.
 
-완료 후 Before / After Visual을 검증합니다.
+대표 Screen 이름은 유지됩니다.
+
+완료 후 Visual을 검증합니다.
 
 Inter
 ${fontOption.checked ? "ON" : "OFF"}
 
 Text → "-"
-${renameTextOption.checked ? "ON" : "OFF"}`;
+${renameTextOption.checked ? "ON" : "OFF"}
+
+Frame / Group / Auto Layout Naming
+${renameContainersOption.checked ? "ON" : "OFF"}`;
 
 
   parent.postMessage(
@@ -1186,7 +1241,10 @@ ${renameTextOption.checked ? "ON" : "OFF"}`;
           fontOption.checked,
 
         renameTextToHyphen:
-          renameTextOption.checked
+          renameTextOption.checked,
+
+        renameContainers:
+          renameContainersOption.checked
       }
     },
     "*"
@@ -1210,6 +1268,10 @@ event => {
   }
 
 
+  /* =====================================================
+     PROCESSING
+  ===================================================== */
+
   if (
     msg.type ===
     "processing"
@@ -1220,6 +1282,10 @@ event => {
     return;
   }
 
+
+  /* =====================================================
+     ERROR
+  ===================================================== */
 
   if (
     msg.type ===
@@ -1241,6 +1307,10 @@ event => {
   }
 
 
+  /* =====================================================
+     ANALYSIS
+  ===================================================== */
+
   if (
     msg.type ===
     "analysis"
@@ -1249,13 +1319,17 @@ event => {
     setLoading(false);
 
 
-    let output = "";
+    let output =
+      "";
 
-    let allGarbage = [];
+
+    let allGarbage =
+      [];
 
 
     for (
-      const data of msg.results
+      const data of
+      msg.results
     ) {
 
       output +=
@@ -1263,6 +1337,9 @@ event => {
 
 Root Type
 ${data.rootType}
+
+Root Name
+Preserve
 
 Root Conversion
 ${data.willConvertToFrame ? "→ Frame" : "Already Frame"}
@@ -1337,6 +1414,10 @@ ${data.bakeCandidates}
   }
 
 
+  /* =====================================================
+     COMPLETE
+  ===================================================== */
+
   if (
     msg.type ===
     "complete"
@@ -1352,7 +1433,7 @@ ${data.bakeCandidates}
     const verification =
       r.rolledBack === 0
         ? "PASS"
-        : "FAILED / ROLLBACK";
+        : "FAILED / PARTIAL ROLLBACK";
 
 
     result.className =
@@ -1379,6 +1460,9 @@ ${r.rolledBack}
 Detached Instance
 ${r.detachedInstances}
 
+Rejected Instance
+${r.rejectedInstances}
+
 Deleted Garbage
 ${r.removedGarbage}
 
@@ -1388,14 +1472,26 @@ ${r.protectedGarbage}
 Removed Container
 ${r.removedContainers}
 
+Flattened Container
+${r.flattenedContainers}
+
 Flattened Layer
 ${r.movedLayers}
+
+Fast Garbage
+${r.fastGarbage}
+
+Fast Flatten
+${r.fastFlatten}
 
 Text → Inter
 ${r.convertedTexts}
 
 Font Conversion Failed
 ${r.failedFontConversions}
+
+Renamed Layer
+${r.renamedLayers}
 
 Visual Shell
 ${r.visualShells}
@@ -1406,6 +1502,15 @@ ${r.bakedAreas}
 Preserved Exception
 ${r.preservedAreas}
 
+Tree Scan
+${r.treeScans}
+
+Visual Batch Check
+${r.visualBatchChecks}
+
+Binary Split
+${r.binarySplits}
+
 Final Layer
 ${r.finalLayers}`;
 
@@ -1414,7 +1519,9 @@ ${r.finalLayers}`;
       r.committed > 0
     ) {
 
-      renderGarbageList([]);
+      renderGarbageList(
+        []
+      );
     }
 
 
