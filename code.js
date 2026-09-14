@@ -7,38 +7,43 @@ figma.showUI(__html__, {
 
 /* =========================================================
    SCREEN LAYER CLEANER
-   FAST + SAFE VERSION
+   BATCH + BINARY ISOLATION ENGINE
 
    제1법칙
    ---------------------------------------------------------
-   디자인 화면은 변경하지 않는다.
+   디자인 화면의 시각적 결과는 변경하지 않는다.
 
-   전략
+   속도 전략
    ---------------------------------------------------------
-   FAST SAFE
-   - 확실한 Garbage
-   - 단순 Group / Frame
-   - Naming
-   → PNG 검사 생략
+   1. Tree 전체 탐색 횟수 최소화
+   2. Fast-safe 작업은 PNG 검증 없이 처리
+   3. 위험 작업은 여러 개를 한 번에 Batch 검증
+   4. Batch 실패 시에만 Binary Isolation
+      32개 -> 16/16 -> 8/8 ...
+   5. 레이어마다 Root Clone / PNG Export 하지 않음
+   6. 구조 변경 후 필요한 시점에만 재탐색
 
-   GEOMETRY SAFE
-   - 단순 Container Flatten
-   → 절대 좌표 / 크기 비교
-
-   VISUAL SAFE
-   - Instance
-   - Auto Layout
-   - Mask / Clip
-   - 애매한 Container
-   - Layer Order
-   - Font
-   → PNG Before / After 검증
-
+   유지 기능
+   ---------------------------------------------------------
+   - Garbage Analyze / Review / 선택 삭제
+   - Hidden / Transparent / Empty / Outside Screen 추적
+   - Root -> Frame
+   - Instance Detach
+   - Mask / Real Clip -> screenshot
+   - Frame / Group / Auto Layout Flatten
+   - 가능한 범위까지 1 Depth
+   - LID 보호
+   - Text "-" 옵션
+   - Font -> Inter 옵션
+   - icon / line / shape / image / screenshot
+   - frame / group / instance / component / iphone
+   - 화면 위->아래 / 같은 줄 좌->우
+   - 겹치는 Layer 기존 Z-order 보존
 ========================================================= */
 
 
 /* =========================================================
-   GLOBAL
+   OPTIONS / STATE
 ========================================================= */
 
 let renameTextToHyphen = false;
@@ -47,23 +52,41 @@ let convertFontToInter = false;
 let approvedGarbageIds = new Set();
 let analyzedRootIds = [];
 
+
+/*
+ * Working Root는 원본 화면에서 멀리 떨어진 곳에 둔다.
+ */
 const WORK_OFFSET_X = 30000;
 const CHECKPOINT_OFFSET_X = 60000;
 
+
+/*
+ * Ordering
+ */
 const ROW_Y_TOLERANCE = 6;
+
+
+/*
+ * Fast Flatten Geometry 검사
+ */
 const GEOMETRY_TOLERANCE = 0.25;
 
-const MAX_INSTANCE_PASSES = 8;
-const MAX_SCREENSHOT_PASSES = 8;
-const MAX_FLATTEN_PASSES = 20;
+
+/*
+ * 구조 변경 후 Instance만 최대 2회 재탐색.
+ *
+ * 기존처럼 10~30번 전체 Tree를 계속 재탐색하지 않는다.
+ */
+const MAX_INSTANCE_ROUNDS = 2;
 
 
 /* =========================================================
-   INTERNAL PLUGIN DATA
+   PLUGIN DATA
 ========================================================= */
 
 const PD_GARBAGE_ID = "slc_garbage_id";
-const PD_CURRENT_OP = "slc_current_op";
+
+const PD_TASK_ID = "slc_task_id";
 
 const PD_SKIP_DETACH = "slc_skip_detach";
 const PD_SKIP_SCREENSHOT = "slc_skip_screenshot";
@@ -116,6 +139,13 @@ function createStats() {
 
     finalLayers: 0,
 
+    /*
+     * 성능 확인용
+     */
+    treeScans: 0,
+    visualBatchChecks: 0,
+    binarySplits: 0,
+
     report: []
   };
 }
@@ -135,19 +165,24 @@ function addReport(
   const entry = {
     action,
     status,
+
     node:
       node && isAlive(node)
         ? safeName(node)
         : "",
+
     type:
       node && isAlive(node)
         ? safeType(node)
         : "",
+
     reason:
       reason || ""
   };
 
+
   stats.report.push(entry);
+
 
   const symbol =
     status === "SUCCESS"
@@ -155,6 +190,7 @@ function addReport(
       : status === "SKIPPED"
         ? "→"
         : "✕";
+
 
   console.log(
     `[Screen Layer Cleaner] ${symbol} ${action}`,
@@ -170,7 +206,9 @@ function addReport(
 
 function safeType(node) {
   try {
-    return node ? node.type : null;
+    return node
+      ? node.type
+      : null;
   } catch (_) {
     return null;
   }
@@ -179,7 +217,9 @@ function safeType(node) {
 
 function safeName(node) {
   try {
-    return node ? node.name : "";
+    return node
+      ? node.name
+      : "";
   } catch (_) {
     return "";
   }
@@ -188,7 +228,9 @@ function safeName(node) {
 
 function safeId(node) {
   try {
-    return node ? node.id : null;
+    return node
+      ? node.id
+      : null;
   } catch (_) {
     return null;
   }
@@ -197,7 +239,9 @@ function safeId(node) {
 
 function safeParent(node) {
   try {
-    return node ? node.parent : null;
+    return node
+      ? node.parent
+      : null;
   } catch (_) {
     return null;
   }
@@ -237,7 +281,10 @@ function childrenOf(node) {
 
 function safeBounds(node) {
   try {
-    return node.absoluteBoundingBox || null;
+    return (
+      node.absoluteBoundingBox ||
+      null
+    );
   } catch (_) {
     return null;
   }
@@ -274,6 +321,7 @@ function safeRemove(node) {
   try {
     node.remove();
     return true;
+
   } catch (_) {
     return false;
   }
@@ -281,11 +329,12 @@ function safeRemove(node) {
 
 
 /* =========================================================
-   NODE TYPES
+   TYPE HELPERS
 ========================================================= */
 
 function isContainer(node) {
-  const type = safeType(node);
+  const type =
+    safeType(node);
 
   return (
     type === "FRAME" ||
@@ -318,11 +367,16 @@ function isAutoLayout(node) {
 
 
 function participatesInAutoLayout(node) {
-  const parent = safeParent(node);
+  const parent =
+    safeParent(node);
 
-  if (!parent || !isAutoLayout(parent)) {
+  if (
+    !parent ||
+    !isAutoLayout(parent)
+  ) {
     return false;
   }
+
 
   try {
     if (
@@ -333,6 +387,7 @@ function participatesInAutoLayout(node) {
     }
   } catch (_) {}
 
+
   return true;
 }
 
@@ -341,7 +396,10 @@ function participatesInAutoLayout(node) {
    TRANSFORM
 ========================================================= */
 
-function multiplyTransform(a, b) {
+function multiplyTransform(
+  a,
+  b
+) {
   return [
     [
       a[0][0] * b[0][0] +
@@ -354,6 +412,7 @@ function multiplyTransform(a, b) {
         a[0][1] * b[1][2] +
         a[0][2]
     ],
+
     [
       a[1][0] * b[0][0] +
         a[1][1] * b[1][0],
@@ -378,9 +437,11 @@ function invertTransform(m) {
   const d = m[1][1];
   const f = m[1][2];
 
+
   const det =
     a * d -
     b * c;
+
 
   if (
     Math.abs(det) <
@@ -391,7 +452,10 @@ function invertTransform(m) {
     );
   }
 
-  const inv = 1 / det;
+
+  const inv =
+    1 / det;
+
 
   return [
     [
@@ -399,6 +463,7 @@ function invertTransform(m) {
       -c * inv,
       (c * f - d * e) * inv
     ],
+
     [
       -b * inv,
       a * inv,
@@ -415,14 +480,18 @@ function absoluteToRelative(
   const parentTransform =
     safeTransform(parent);
 
+
   if (!parentTransform) {
     throw new Error(
       "Parent transform unavailable."
     );
   }
 
+
   return multiplyTransform(
-    invertTransform(parentTransform),
+    invertTransform(
+      parentTransform
+    ),
     absoluteTransform
   );
 }
@@ -432,13 +501,19 @@ function absoluteToRelative(
    PLUGIN DATA
 ========================================================= */
 
-function getPD(node, key) {
+function getPD(
+  node,
+  key
+) {
   if (!isAlive(node)) {
     return "";
   }
 
   try {
-    return node.getPluginData(key) || "";
+    return (
+      node.getPluginData(key) ||
+      ""
+    );
   } catch (_) {
     return "";
   }
@@ -468,7 +543,9 @@ function findByPluginData(
   key,
   value
 ) {
-  let found = null;
+  let found =
+    null;
+
 
   function walk(node) {
     if (
@@ -478,13 +555,19 @@ function findByPluginData(
       return;
     }
 
+
     if (
-      getPD(node, key) ===
-      value
+      getPD(
+        node,
+        key
+      ) === value
     ) {
-      found = node;
+      found =
+        node;
+
       return;
     }
+
 
     for (
       const child of
@@ -498,7 +581,9 @@ function findByPluginData(
     }
   }
 
+
   walk(root);
+
 
   return found;
 }
@@ -507,17 +592,19 @@ function findByPluginData(
 function clearInternalPluginData(root) {
   const keys = [
     PD_GARBAGE_ID,
-    PD_CURRENT_OP,
+    PD_TASK_ID,
     PD_SKIP_DETACH,
     PD_SKIP_SCREENSHOT,
     PD_SKIP_FLATTEN,
     PD_INTER_DONE
   ];
 
+
   function walk(node) {
     if (!isAlive(node)) {
       return;
     }
+
 
     for (
       const key of keys
@@ -529,6 +616,7 @@ function clearInternalPluginData(root) {
       );
     }
 
+
     for (
       const child of
       childrenOf(node)
@@ -537,16 +625,36 @@ function clearInternalPluginData(root) {
     }
   }
 
+
   walk(root);
 }
 
 
 /* =========================================================
-   ORIGINAL → CLONE PATH
+   UNIQUE TASK MARKER
+========================================================= */
+
+let taskCounter = 0;
+
+
+function createTaskMarker(prefix) {
+  taskCounter++;
+
+  return (
+    `${prefix}_${Date.now()}_${taskCounter}`
+  );
+}
+
+
+/* =========================================================
+   PATH MAP
+   Analyze 당시 Garbage ID -> Clone Layer 대응용
 ========================================================= */
 
 function createPathMap(root) {
-  const map = new Map();
+  const map =
+    new Map();
+
 
   function walk(
     node,
@@ -556,7 +664,10 @@ function createPathMap(root) {
       return;
     }
 
-    const id = safeId(node);
+
+    const id =
+      safeId(node);
+
 
     if (id) {
       map.set(
@@ -565,8 +676,10 @@ function createPathMap(root) {
       );
     }
 
+
     const children =
       childrenOf(node);
+
 
     for (
       let i = 0;
@@ -575,15 +688,17 @@ function createPathMap(root) {
     ) {
       walk(
         children[i],
-        [
-          ...path,
-          i
-        ]
+        [...path, i]
       );
     }
   }
 
-  walk(root, []);
+
+  walk(
+    root,
+    []
+  );
+
 
   return map;
 }
@@ -593,13 +708,16 @@ function resolvePath(
   root,
   path
 ) {
-  let current = root;
+  let current =
+    root;
+
 
   for (
     const index of path
   ) {
     const children =
       childrenOf(current);
+
 
     if (
       index < 0 ||
@@ -608,20 +726,23 @@ function resolvePath(
       return null;
     }
 
+
     current =
       children[index];
+
 
     if (!isAlive(current)) {
       return null;
     }
   }
 
+
   return current;
 }
 
 
 /* =========================================================
-   PNG VISUAL CHECK
+   PNG
 ========================================================= */
 
 async function exportNodePng(node) {
@@ -629,9 +750,11 @@ async function exportNodePng(node) {
     return null;
   }
 
+
   try {
     return await node.exportAsync({
       format: "PNG",
+
       constraint: {
         type: "SCALE",
         value: 1
@@ -644,10 +767,17 @@ async function exportNodePng(node) {
 }
 
 
-function sameBytes(a, b) {
-  if (!a || !b) {
+function sameBytes(
+  a,
+  b
+) {
+  if (
+    !a ||
+    !b
+  ) {
     return false;
   }
+
 
   if (
     a.length !==
@@ -656,24 +786,27 @@ function sameBytes(a, b) {
     return false;
   }
 
+
   for (
     let i = 0;
     i < a.length;
     i++
   ) {
     if (
-      a[i] !== b[i]
+      a[i] !==
+      b[i]
     ) {
       return false;
     }
   }
+
 
   return true;
 }
 
 
 /* =========================================================
-   WORKING STATE
+   WORKING ROOT
 ========================================================= */
 
 async function createWorkingState(
@@ -682,9 +815,11 @@ async function createWorkingState(
   const clone =
     originalRoot.clone();
 
+
   figma.currentPage.appendChild(
     clone
   );
+
 
   clone.x =
     originalRoot.x +
@@ -693,6 +828,7 @@ async function createWorkingState(
   clone.y =
     originalRoot.y;
 
+
   return {
     root: clone
   };
@@ -700,40 +836,48 @@ async function createWorkingState(
 
 
 /* =========================================================
-   VISUAL TRANSACTION
-   위험한 작업에만 사용
+   BATCH VISUAL TRANSACTION
+
+   여러 Task를 한 번에 처리한다.
+
+   BEFORE PNG        1회
+   CHECKPOINT CLONE  1회
+   N개 작업
+   AFTER PNG         1회
+
+   PASS
+   → N개 전부 확정
+
+   FAIL
+   → 전체 Restore 후 Binary Isolation
 ========================================================= */
 
-async function runVisualTransaction(
+async function runVisualBatchTransaction(
   state,
-  mutate
+  tasks,
+  applyTask,
+  stats
 ) {
   if (
     !state ||
-    !isAlive(state.root)
+    !isAlive(state.root) ||
+    tasks.length === 0
   ) {
     return {
       accepted: false,
       attempted: false,
-      reason: "working-root-missing"
+      reason: "empty-batch",
+      results: []
     };
   }
+
+
+  stats.visualBatchChecks++;
+
 
   const currentRoot =
     state.root;
 
-  const before =
-    await exportNodePng(
-      currentRoot
-    );
-
-  if (!before) {
-    return {
-      accepted: false,
-      attempted: false,
-      reason: "before-render-failed"
-    };
-  }
 
   const rootX =
     currentRoot.x;
@@ -741,15 +885,36 @@ async function runVisualTransaction(
   const rootY =
     currentRoot.y;
 
-  let checkpoint = null;
+
+  const before =
+    await exportNodePng(
+      currentRoot
+    );
+
+
+  if (!before) {
+    return {
+      accepted: false,
+      attempted: false,
+      reason: "before-render-failed",
+      results: []
+    };
+  }
+
+
+  let checkpoint =
+    null;
+
 
   try {
     checkpoint =
       currentRoot.clone();
 
+
     figma.currentPage.appendChild(
       checkpoint
     );
+
 
     checkpoint.x =
       rootX +
@@ -758,23 +923,79 @@ async function runVisualTransaction(
     checkpoint.y =
       rootY;
 
-  } catch (_) {
+  } catch (error) {
     return {
       accepted: false,
       attempted: false,
-      reason: "checkpoint-create-failed"
+      reason: "checkpoint-create-failed",
+      results: [],
+      error
     };
   }
 
-  let mutationResult;
+
+  const results =
+    [];
+
+
+  let changedAny =
+    false;
+
 
   try {
-    mutationResult =
-      await mutate(
-        currentRoot
-      );
+
+    /*
+     * 하나씩 검증하는 것이 아니라
+     * Batch 내부에서는 연속 실행한다.
+     */
+    for (
+      const task of tasks
+    ) {
+      let result;
+
+      try {
+        result =
+          await applyTask(
+            state.root,
+            task
+          );
+
+      } catch (error) {
+        result = {
+          changed: false,
+          reason: "operation-error",
+          error
+        };
+      }
+
+
+      results.push({
+        task,
+        ...result
+      });
+
+
+      if (
+        result &&
+        result.root &&
+        isAlive(result.root)
+      ) {
+        state.root =
+          result.root;
+      }
+
+
+      if (
+        result &&
+        result.changed
+      ) {
+        changedAny =
+          true;
+      }
+    }
 
   } catch (error) {
+
     if (
       state.root &&
       isAlive(state.root)
@@ -784,43 +1005,59 @@ async function runVisualTransaction(
       );
     }
 
-    checkpoint.x = rootX;
-    checkpoint.y = rootY;
+
+    checkpoint.x =
+      rootX;
+
+    checkpoint.y =
+      rootY;
+
 
     state.root =
       checkpoint;
 
+
     return {
       accepted: false,
       attempted: true,
-      reason: "operation-error",
+      reason: "batch-operation-error",
+      results,
       error
     };
   }
 
-  if (
-    mutationResult &&
-    mutationResult.root &&
-    isAlive(
-      mutationResult.root
-    )
-  ) {
-    state.root =
-      mutationResult.root;
+
+  /*
+   * 아무 변경도 없었다면
+   * Checkpoint 제거 후 종료.
+   */
+  if (!changedAny) {
+    safeRemove(
+      checkpoint
+    );
+
+
+    return {
+      accepted: false,
+      attempted: false,
+      reason: "no-change",
+      results
+    };
   }
 
-  const changed =
-    !!(
-      mutationResult &&
-      mutationResult.changed
-    );
 
   const after =
     await exportNodePng(
       state.root
     );
 
+
+  /*
+   * Render까지 실패하면
+   * Batch 전체 Restore.
+   */
   if (!after) {
+
     if (
       state.root &&
       isAlive(state.root)
@@ -830,60 +1067,55 @@ async function runVisualTransaction(
       );
     }
 
-    checkpoint.x = rootX;
-    checkpoint.y = rootY;
+
+    checkpoint.x =
+      rootX;
+
+    checkpoint.y =
+      rootY;
+
 
     state.root =
       checkpoint;
+
 
     return {
       accepted: false,
       attempted: true,
       reason: "after-render-failed",
-      data: mutationResult
+      results
     };
   }
 
-  const same =
+
+  /*
+   * ★ Batch 전체 PASS
+   */
+  if (
     sameBytes(
       before,
       after
+    )
+  ) {
+    safeRemove(
+      checkpoint
     );
 
-  if (
-    !changed &&
-    same
-  ) {
-    safeRemove(checkpoint);
-
-    return {
-      accepted: false,
-      attempted: false,
-      reason:
-        mutationResult &&
-        mutationResult.reason
-          ? mutationResult.reason
-          : "no-change",
-      data: mutationResult
-    };
-  }
-
-  if (
-    changed &&
-    same
-  ) {
-    safeRemove(checkpoint);
 
     return {
       accepted: true,
       attempted: true,
       reason: "visual-identical",
-      data: mutationResult
+      results
     };
   }
 
+
   /*
-   * 실패 → 해당 작업만 복구
+   * ★ Batch FAIL
+   *
+   * 현재 작업본 버리고
+   * Checkpoint 복원.
    */
   if (
     state.root &&
@@ -894,21 +1126,200 @@ async function runVisualTransaction(
     );
   }
 
-  checkpoint.x = rootX;
-  checkpoint.y = rootY;
+
+  checkpoint.x =
+    rootX;
+
+  checkpoint.y =
+    rootY;
+
 
   state.root =
     checkpoint;
 
+
   return {
     accepted: false,
     attempted: true,
-    reason:
-      changed
-        ? "visual-changed"
-        : "unexpected-mutation",
-    data: mutationResult
+    reason: "visual-changed",
+    results
   };
+}
+
+
+/* =========================================================
+   BINARY ISOLATION
+
+   32개 Batch 실패
+   ↓
+   16 / 16
+   ↓
+   실패한 절반만 다시 8 / 8
+   ↓
+   최종 문제 Layer만 Reject
+========================================================= */
+
+async function processBatchWithIsolation({
+  state,
+  tasks,
+  applyTask,
+  stats,
+  onAccepted,
+  onRejected,
+  onSkipped
+}) {
+  if (
+    !tasks ||
+    tasks.length === 0
+  ) {
+    return;
+  }
+
+
+  const tx =
+    await runVisualBatchTransaction(
+      state,
+      tasks,
+      applyTask,
+      stats
+    );
+
+
+  /*
+   * Batch 전체 PASS
+   */
+  if (tx.accepted) {
+
+    const resultMap =
+      new Map();
+
+
+    for (
+      const item of tx.results
+    ) {
+      resultMap.set(
+        item.task.marker,
+        item
+      );
+    }
+
+
+    for (
+      const task of tasks
+    ) {
+      const result =
+        resultMap.get(
+          task.marker
+        );
+
+
+      if (
+        result &&
+        result.changed
+      ) {
+        await onAccepted(
+          task,
+          result
+        );
+
+      } else {
+        await onSkipped(
+          task,
+          result || {
+            reason: "no-change"
+          }
+        );
+      }
+    }
+
+
+    return;
+  }
+
+
+  /*
+   * 실제 변경이 하나도 없었던 Batch.
+   */
+  if (
+    !tx.attempted
+  ) {
+    for (
+      const task of tasks
+    ) {
+      await onSkipped(
+        task,
+        {
+          reason:
+            tx.reason
+        }
+      );
+    }
+
+    return;
+  }
+
+
+  /*
+   * 최종 1개까지 좁혀짐.
+   *
+   * 이 Layer만 Reject.
+   */
+  if (
+    tasks.length === 1
+  ) {
+    await onRejected(
+      tasks[0],
+      tx
+    );
+
+    return;
+  }
+
+
+  /*
+   * ★ 실패한 Batch를 반으로 나눈다.
+   */
+  stats.binarySplits++;
+
+
+  const middle =
+    Math.ceil(
+      tasks.length / 2
+    );
+
+
+  const left =
+    tasks.slice(
+      0,
+      middle
+    );
+
+  const right =
+    tasks.slice(
+      middle
+    );
+
+
+  await processBatchWithIsolation({
+    state,
+    tasks: left,
+    applyTask,
+    stats,
+    onAccepted,
+    onRejected,
+    onSkipped
+  });
+
+
+  await processBatchWithIsolation({
+    state,
+    tasks: right,
+    applyTask,
+    stats,
+    onAccepted,
+    onRejected,
+    onSkipped
+  });
 }
 
 
@@ -921,10 +1332,12 @@ function isLidName(name) {
     return false;
   }
 
+
   const value =
     String(name)
       .trim()
       .toLowerCase();
+
 
   return (
     value.startsWith("cci_ctn_") ||
@@ -936,29 +1349,34 @@ function isLidName(name) {
 
 
 /* =========================================================
-   PAINT / EFFECT HELPERS
+   PAINT / EFFECT
 ========================================================= */
 
-function hasVisiblePaint(paints) {
+function hasVisiblePaint(
+  paints
+) {
   if (!Array.isArray(paints)) {
     return false;
   }
 
+
   return paints.some(
     paint => {
+
       if (
         paint.visible === false
       ) {
         return false;
       }
 
+
       if (
-        typeof paint.opacity ===
-          "number" &&
+        typeof paint.opacity === "number" &&
         paint.opacity === 0
       ) {
         return false;
       }
+
 
       return true;
     }
@@ -970,12 +1388,12 @@ function hasVisibleFill(node) {
   try {
     if (
       !("fills" in node) ||
-      node.fills ===
-        figma.mixed ||
+      node.fills === figma.mixed ||
       !Array.isArray(node.fills)
     ) {
       return false;
     }
+
 
     return hasVisiblePaint(
       node.fills
@@ -991,12 +1409,12 @@ function hasVisibleStroke(node) {
   try {
     if (
       !("strokes" in node) ||
-      node.strokes ===
-        figma.mixed ||
+      node.strokes === figma.mixed ||
       !Array.isArray(node.strokes)
     ) {
       return false;
     }
+
 
     return hasVisiblePaint(
       node.strokes
@@ -1016,6 +1434,7 @@ function hasVisibleEffects(node) {
     ) {
       return false;
     }
+
 
     return node.effects.some(
       effect =>
@@ -1041,21 +1460,17 @@ function hasImageFill(node) {
   try {
     if (
       !("fills" in node) ||
-      node.fills ===
-        figma.mixed ||
-      !Array.isArray(
-        node.fills
-      )
+      node.fills === figma.mixed ||
+      !Array.isArray(node.fills)
     ) {
       return false;
     }
 
+
     return node.fills.some(
       fill =>
-        fill.type ===
-          "IMAGE" &&
-        fill.visible !==
-          false
+        fill.type === "IMAGE" &&
+        fill.visible !== false
     );
 
   } catch (_) {
@@ -1065,7 +1480,7 @@ function hasImageFill(node) {
 
 
 /* =========================================================
-   MASK
+   MASK / CLIP
 ========================================================= */
 
 function isMaskNode(node) {
@@ -1091,6 +1506,7 @@ function containsMask(node) {
       return true;
     }
 
+
     if (
       containsMask(child)
     ) {
@@ -1098,18 +1514,16 @@ function containsMask(node) {
     }
   }
 
+
   return false;
 }
 
-
-/* =========================================================
-   CLIP
-========================================================= */
 
 function actuallyClipsChildren(node) {
   if (!isAlive(node)) {
     return false;
   }
+
 
   try {
     if (
@@ -1122,23 +1536,28 @@ function actuallyClipsChildren(node) {
     return false;
   }
 
+
   const box =
     safeBounds(node);
+
 
   if (!box) {
     return true;
   }
 
-  const left = box.x;
-  const top = box.y;
+
+  const left =
+    box.x;
+
+  const top =
+    box.y;
 
   const right =
-    box.x +
-    box.width;
+    box.x + box.width;
 
   const bottom =
-    box.y +
-    box.height;
+    box.y + box.height;
+
 
   for (
     const child of
@@ -1153,31 +1572,26 @@ function actuallyClipsChildren(node) {
       }
     } catch (_) {}
 
+
     const childBox =
       safeRenderBounds(child);
+
 
     if (!childBox) {
       continue;
     }
 
+
     if (
-      childBox.x <
-        left - 0.5 ||
-
-      childBox.y <
-        top - 0.5 ||
-
-      childBox.x +
-        childBox.width >
-        right + 0.5 ||
-
-      childBox.y +
-        childBox.height >
-        bottom + 0.5
+      childBox.x < left - 0.5 ||
+      childBox.y < top - 0.5 ||
+      childBox.x + childBox.width > right + 0.5 ||
+      childBox.y + childBox.height > bottom + 0.5
     ) {
       return true;
     }
   }
+
 
   return false;
 }
@@ -1187,21 +1601,10 @@ function actuallyClipsChildren(node) {
    GARBAGE DETECTION
 ========================================================= */
 
-function isTinyNode(node) {
-  try {
-    return (
-      node.width <= 0.1 ||
-      node.height <= 0.1
-    );
-  } catch (_) {
-    return false;
-  }
-}
-
-
 function isShapeNode(node) {
   const type =
     safeType(node);
+
 
   return (
     type === "RECTANGLE" ||
@@ -1215,6 +1618,18 @@ function isShapeNode(node) {
 }
 
 
+function isTinyNode(node) {
+  try {
+    return (
+      node.width <= 0.1 ||
+      node.height <= 0.1
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+
 function isEmptyVisualShape(node) {
   if (
     !isShapeNode(node) ||
@@ -1222,6 +1637,7 @@ function isEmptyVisualShape(node) {
   ) {
     return false;
   }
+
 
   return (
     !hasVisibleFill(node) &&
@@ -1232,11 +1648,10 @@ function isEmptyVisualShape(node) {
 
 
 function isEmptyContainer(node) {
-  if (
-    !isContainer(node)
-  ) {
+  if (!isContainer(node)) {
     return false;
   }
+
 
   return (
     childrenOf(node).length === 0 &&
@@ -1259,33 +1674,45 @@ function isOutsideRoot(
     return false;
   }
 
-  const n =
+
+  const nodeBox =
     safeRenderBounds(node);
 
-  const r =
+  const rootBox =
     safeBounds(root);
 
-  if (!n || !r) {
+
+  if (
+    !nodeBox ||
+    !rootBox
+  ) {
     return false;
   }
 
-  const nr =
-    n.x + n.width;
 
-  const nb =
-    n.y + n.height;
+  const nodeRight =
+    nodeBox.x +
+    nodeBox.width;
 
-  const rr =
-    r.x + r.width;
+  const nodeBottom =
+    nodeBox.y +
+    nodeBox.height;
 
-  const rb =
-    r.y + r.height;
+
+  const rootRight =
+    rootBox.x +
+    rootBox.width;
+
+  const rootBottom =
+    rootBox.y +
+    rootBox.height;
+
 
   return (
-    nr <= r.x ||
-    n.x >= rr ||
-    nb <= r.y ||
-    n.y >= rb
+    nodeRight <= rootBox.x ||
+    nodeBox.x >= rootRight ||
+    nodeBottom <= rootBox.y ||
+    nodeBox.y >= rootBottom
   );
 }
 
@@ -1294,20 +1721,17 @@ function getGarbageReason(
   node,
   root
 ) {
-  if (!isAlive(node)) {
-    return null;
-  }
-
-  /*
-   * Root 자체는 Garbage 금지.
-   */
   if (
+    !isAlive(node) ||
     node === root
   ) {
     return null;
   }
 
-  /* Hidden */
+
+  /*
+   * Hidden
+   */
   try {
     if (
       "visible" in node &&
@@ -1318,7 +1742,9 @@ function getGarbageReason(
   } catch (_) {}
 
 
-  /* Transparent */
+  /*
+   * Transparent
+   */
   try {
     if (
       "opacity" in node &&
@@ -1329,16 +1755,13 @@ function getGarbageReason(
   } catch (_) {}
 
 
-  /* Slice */
   if (
-    safeType(node) ===
-    "SLICE"
+    safeType(node) === "SLICE"
   ) {
     return "Slice";
   }
 
 
-  /* Tiny */
   if (
     isTinyNode(node)
   ) {
@@ -1346,7 +1769,6 @@ function getGarbageReason(
   }
 
 
-  /* Empty Shape */
   if (
     isEmptyVisualShape(node)
   ) {
@@ -1354,7 +1776,6 @@ function getGarbageReason(
   }
 
 
-  /* Empty Container */
   if (
     isEmptyContainer(node)
   ) {
@@ -1362,9 +1783,7 @@ function getGarbageReason(
   }
 
 
-  /* Outside Screen */
   if (
-    root &&
     isOutsideRoot(
       node,
       root
@@ -1389,16 +1808,7 @@ function isFastSafeGarbage(
 ) {
   if (
     !isAlive(node) ||
-    node === root
-  ) {
-    return false;
-  }
-
-
-  /*
-   * Mask는 무조건 제외.
-   */
-  if (
+    node === root ||
     isMaskNode(node)
   ) {
     return false;
@@ -1406,8 +1816,8 @@ function isFastSafeGarbage(
 
 
   /*
-   * Auto Layout flow item은 삭제하면
-   * 형제 위치가 변할 수 있음.
+   * Auto Layout Flow에 들어간 Layer는
+   * 삭제가 형제 위치를 바꿀 수 있다.
    */
   if (
     participatesInAutoLayout(node)
@@ -1416,9 +1826,6 @@ function isFastSafeGarbage(
   }
 
 
-  /*
-   * Hidden
-   */
   try {
     if (
       "visible" in node &&
@@ -1430,7 +1837,7 @@ function isFastSafeGarbage(
 
 
   /*
-   * 완전히 빈 Shape
+   * 빈 Shape
    */
   if (
     isEmptyVisualShape(node)
@@ -1450,7 +1857,7 @@ function isFastSafeGarbage(
 
 
   /*
-   * Screen 바깥 + Root가 Clip.
+   * Clip Screen 밖
    */
   if (
     isOutsideRoot(
@@ -1474,11 +1881,12 @@ function isFastSafeGarbage(
 
 
 /* =========================================================
-   GARBAGE ANALYSIS
+   GARBAGE ANALYZE
 ========================================================= */
 
 function collectGarbageItems(root) {
-  const result = [];
+  const result =
+    [];
 
 
   function walk(
@@ -1489,19 +1897,23 @@ function collectGarbageItems(root) {
       return;
     }
 
+
     const name =
       safeName(node);
+
 
     const currentPath =
       path
         ? `${path} / ${name}`
         : name;
 
+
     const reason =
       getGarbageReason(
         node,
         root
       );
+
 
     if (reason) {
       result.push({
@@ -1511,8 +1923,7 @@ function collectGarbageItems(root) {
         name,
 
         type:
-          safeType(node) ||
-          "UNKNOWN",
+          safeType(node) || "UNKNOWN",
 
         reason,
 
@@ -1520,6 +1931,7 @@ function collectGarbageItems(root) {
           currentPath
       });
     }
+
 
     for (
       const child of
@@ -1533,14 +1945,18 @@ function collectGarbageItems(root) {
   }
 
 
-  walk(root, "");
+  walk(
+    root,
+    ""
+  );
+
 
   return result;
 }
 
 
 /* =========================================================
-   MARK GARBAGE ON CLONE
+   MARK SELECTED GARBAGE
 ========================================================= */
 
 function markSelectedGarbage(
@@ -1552,6 +1968,7 @@ function markSelectedGarbage(
       originalRoot
     );
 
+
   for (
     const id of
     approvedGarbageIds
@@ -1559,9 +1976,11 @@ function markSelectedGarbage(
     const path =
       map.get(id);
 
+
     if (!path) {
       continue;
     }
+
 
     const node =
       resolvePath(
@@ -1569,9 +1988,11 @@ function markSelectedGarbage(
         path
       );
 
+
     if (!node) {
       continue;
     }
+
 
     setPD(
       node,
@@ -1583,6 +2004,148 @@ function markSelectedGarbage(
 
 
 /* =========================================================
+   GARBAGE TASK PLAN
+
+   부모 Garbage가 선택되어 있으면
+   그 내부의 선택 Garbage는 별도 Task로 만들지 않는다.
+========================================================= */
+
+function buildGarbageTasks(root) {
+  const result =
+    [];
+
+
+  function countMarked(node) {
+    let count = 0;
+
+
+    function walk(current) {
+      if (!isAlive(current)) {
+        return;
+      }
+
+
+      if (
+        getPD(
+          current,
+          PD_GARBAGE_ID
+        )
+      ) {
+        count++;
+      }
+
+
+      for (
+        const child of
+        childrenOf(current)
+      ) {
+        walk(child);
+      }
+    }
+
+
+    walk(node);
+
+
+    return Math.max(
+      count,
+      1
+    );
+  }
+
+
+  function walk(
+    node,
+    selectedAncestor
+  ) {
+    if (!isAlive(node)) {
+      return;
+    }
+
+
+    const markerId =
+      getPD(
+        node,
+        PD_GARBAGE_ID
+      );
+
+
+    const selected =
+      !!markerId &&
+      !!getGarbageReason(
+        node,
+        root
+      );
+
+
+    if (
+      selected &&
+      !selectedAncestor
+    ) {
+      const marker =
+        createTaskMarker(
+          "garbage"
+        );
+
+
+      setPD(
+        node,
+        PD_TASK_ID,
+        marker
+      );
+
+
+      result.push({
+        marker,
+
+        name:
+          safeName(node),
+
+        type:
+          safeType(node),
+
+        reason:
+          getGarbageReason(
+            node,
+            root
+          ),
+
+        count:
+          countMarked(node),
+
+        fast:
+          isFastSafeGarbage(
+            node,
+            root
+          )
+      });
+    }
+
+
+    for (
+      const child of
+      childrenOf(node)
+    ) {
+      walk(
+        child,
+        selectedAncestor ||
+        selected
+      );
+    }
+  }
+
+
+  walk(
+    root,
+    false
+  );
+
+
+  return result;
+}
+
+
+/* =========================================================
    PROCESS GARBAGE
 ========================================================= */
 
@@ -1590,207 +2153,168 @@ async function processGarbage(
   state,
   stats
 ) {
-  while (true) {
-    let target = null;
-    let shallowest =
-      Infinity;
-
-
-    function walk(
-      node,
-      depth
-    ) {
-      if (!isAlive(node)) {
-        return;
-      }
-
-      if (
-        getPD(
-          node,
-          PD_GARBAGE_ID
-        ) &&
-        getGarbageReason(
-          node,
-          state.root
-        ) &&
-        depth < shallowest
-      ) {
-        target = node;
-        shallowest = depth;
-      }
-
-      for (
-        const child of
-        childrenOf(node)
-      ) {
-        walk(
-          child,
-          depth + 1
-        );
-      }
-    }
-
-
-    walk(
-      state.root,
-      0
+  const tasks =
+    buildGarbageTasks(
+      state.root
     );
 
 
-    if (!target) {
-      break;
-    }
-
-
-    const markerId =
-      getPD(
-        target,
-        PD_GARBAGE_ID
-      );
-
-    const name =
-      safeName(target);
-
-    const type =
-      safeType(target);
-
-    const reason =
-      getGarbageReason(
-        target,
-        state.root
-      );
-
-
-    /* =====================================================
-       FAST PATH
-    ===================================================== */
-
-    if (
-      isFastSafeGarbage(
-        target,
-        state.root
-      )
-    ) {
-      if (
-        safeRemove(target)
-      ) {
-        stats.removedGarbage++;
-        stats.fastGarbage++;
-
-        addReport(
-          stats,
-          "Garbage Delete",
-          "SUCCESS",
-          null,
-          `${type} "${name}" · ${reason} · Fast Safe`
-        );
-
-        continue;
-      }
-    }
-
-
-    /* =====================================================
-       VISUAL PATH
-    ===================================================== */
-
-    const marker =
-      `garbage_${Date.now()}_${Math.random()}`;
-
-
-    setPD(
-      target,
-      PD_CURRENT_OP,
-      marker
+  const fastTasks =
+    tasks.filter(
+      task =>
+        task.fast
     );
 
 
-    const tx =
-      await runVisualTransaction(
-        state,
+  const riskyTasks =
+    tasks.filter(
+      task =>
+        !task.fast
+    );
 
-        async root => {
-          const node =
-            findByPluginData(
-              root,
-              PD_CURRENT_OP,
-              marker
-            );
 
-          if (!node) {
-            return {
-              root,
-              changed: false,
-              reason:
-                "garbage-not-found"
-            };
-          }
+  /* -------------------------------------------------------
+     FAST SAFE
+     ------------------------------------------------------- */
 
-          return {
-            root,
-            changed:
-              safeRemove(node),
-            reason:
-              "garbage-delete"
-          };
-        }
+  for (
+    const task of fastTasks
+  ) {
+    const node =
+      findByPluginData(
+        state.root,
+        PD_TASK_ID,
+        task.marker
       );
 
 
+    if (!node) {
+      continue;
+    }
+
+
     if (
-      tx.accepted
+      safeRemove(node)
     ) {
-      stats.removedGarbage++;
+      stats.removedGarbage +=
+        task.count;
+
+      stats.fastGarbage +=
+        task.count;
+
 
       addReport(
         stats,
         "Garbage Delete",
         "SUCCESS",
         null,
-        `${type} "${name}" · ${reason} · Visual Verified`
-      );
-
-      continue;
-    }
-
-
-    stats.protectedGarbage++;
-
-
-    const restored =
-      findByPluginData(
-        state.root,
-        PD_GARBAGE_ID,
-        markerId
-      );
-
-
-    if (restored) {
-      setPD(
-        restored,
-        PD_GARBAGE_ID,
-        ""
-      );
-
-      setPD(
-        restored,
-        PD_CURRENT_OP,
-        ""
+        `${task.type} "${task.name}" · ${task.reason} · Fast`
       );
     }
-
-
-    addReport(
-      stats,
-      "Garbage Delete",
-      "REJECTED",
-      restored,
-      tx.reason ===
-        "visual-changed"
-        ? `삭제 시 Render 변경 · ${reason}`
-        : `삭제 실패 · ${tx.reason}`
-    );
   }
+
+
+  /* -------------------------------------------------------
+     RISKY → BATCH + BINARY
+     ------------------------------------------------------- */
+
+  await processBatchWithIsolation({
+    state,
+
+    tasks:
+      riskyTasks,
+
+    stats,
+
+    applyTask:
+      async (root, task) => {
+
+        const node =
+          findByPluginData(
+            root,
+            PD_TASK_ID,
+            task.marker
+          );
+
+
+        if (!node) {
+          return {
+            root,
+            changed: false,
+            reason: "garbage-missing"
+          };
+        }
+
+
+        return {
+          root,
+
+          changed:
+            safeRemove(node),
+
+          reason:
+            "deleted"
+        };
+      },
+
+    onAccepted:
+      async task => {
+
+        stats.removedGarbage +=
+          task.count;
+
+
+        addReport(
+          stats,
+          "Garbage Delete",
+          "SUCCESS",
+          null,
+          `${task.type} "${task.name}" · ${task.reason} · Batch Verified`
+        );
+      },
+
+    onRejected:
+      async (task, tx) => {
+
+        stats.protectedGarbage +=
+          task.count;
+
+
+        const restored =
+          findByPluginData(
+            state.root,
+            PD_TASK_ID,
+            task.marker
+          );
+
+
+        if (restored) {
+          /*
+           * 앞으로 Garbage 처리에서 다시 잡지 않게
+           * 선택 Marker 제거.
+           */
+          setPD(
+            restored,
+            PD_GARBAGE_ID,
+            ""
+          );
+        }
+
+
+        addReport(
+          stats,
+          "Garbage Delete",
+          "REJECTED",
+          restored,
+          tx.reason === "visual-changed"
+            ? `삭제 시 Render 변경 · ${task.reason}`
+            : tx.reason
+        );
+      },
+
+    onSkipped:
+      async () => {}
+  });
 }
 
 
@@ -1802,19 +2326,18 @@ const loadedFonts =
   new Set();
 
 
-async function loadFontOnce(
-  fontName
-) {
+async function loadFontOnce(fontName) {
   if (
     !fontName ||
-    fontName ===
-      figma.mixed
+    fontName === figma.mixed
   ) {
     return false;
   }
 
+
   const key =
     `${fontName.family}::${fontName.style}`;
+
 
   if (
     loadedFonts.has(key)
@@ -1822,15 +2345,19 @@ async function loadFontOnce(
     return true;
   }
 
+
   try {
     await figma.loadFontAsync({
       family:
         fontName.family,
+
       style:
         fontName.style
     });
 
+
     loadedFonts.add(key);
+
 
     return true;
 
@@ -1840,15 +2367,13 @@ async function loadFontOnce(
 }
 
 
-async function ensureTextFontsLoaded(
-  node
-) {
+async function ensureTextFontsLoaded(node) {
   if (
-    safeType(node) !==
-    "TEXT"
+    safeType(node) !== "TEXT"
   ) {
     return true;
   }
+
 
   try {
     const segments =
@@ -1856,17 +2381,18 @@ async function ensureTextFontsLoaded(
         ["fontName"]
       );
 
+
     for (
       const segment of
       segments
     ) {
       if (
         !segment.fontName ||
-        segment.fontName ===
-          figma.mixed
+        segment.fontName === figma.mixed
       ) {
         continue;
       }
+
 
       if (
         !await loadFontOnce(
@@ -1877,6 +2403,7 @@ async function ensureTextFontsLoaded(
       }
     }
 
+
     return true;
 
   } catch (_) {
@@ -1885,21 +2412,20 @@ async function ensureTextFontsLoaded(
 }
 
 
-async function ensureSubtreeFontsLoaded(
-  node
-) {
+async function ensureSubtreeFontsLoaded(node) {
   if (!isAlive(node)) {
     return false;
   }
 
+
   if (
-    safeType(node) ===
-    "TEXT"
+    safeType(node) === "TEXT"
   ) {
     return await ensureTextFontsLoaded(
       node
     );
   }
+
 
   for (
     const child of
@@ -1914,181 +2440,364 @@ async function ensureSubtreeFontsLoaded(
     }
   }
 
+
   return true;
 }
 
 
 /* =========================================================
-   INSTANCE
+   EXECUTION PLAN
+
+   Tree DFS 1회로:
+   - instances
+   - screenshots
+   - fastFlatten
+   - riskyFlatten
+   - texts
+
+   를 전부 수집한다.
 ========================================================= */
 
-function collectInstances(root) {
-  const result = [];
+function buildExecutionPlan(
+  root,
+  stats
+) {
+  stats.treeScans++;
+
+
+  const plan = {
+    instances: [],
+    screenshots: [],
+    fastFlatten: [],
+    riskyFlatten: [],
+    texts: []
+  };
 
 
   function walk(
     node,
-    depth
+    depth,
+    insideInstance
   ) {
+    if (!isAlive(node)) {
+      return;
+    }
+
+
+    const type =
+      safeType(node);
+
+
+    /*
+     * Instance는 먼저 Detach 후
+     * 내부 구조를 다음 Plan에서 본다.
+     *
+     * 이렇게 해야 매번 Instance 안쪽까지
+     * 중복으로 탐색하지 않는다.
+     */
+    if (
+      type === "INSTANCE" &&
+      node !== root &&
+      getPD(
+        node,
+        PD_SKIP_DETACH
+      ) !== "1"
+    ) {
+      const marker =
+        createTaskMarker(
+          "instance"
+        );
+
+
+      setPD(
+        node,
+        PD_TASK_ID,
+        marker
+      );
+
+
+      plan.instances.push({
+        marker,
+        depth,
+
+        name:
+          safeName(node)
+      });
+
+
+      return;
+    }
+
+
+    /*
+     * TEXT
+     */
+    if (
+      type === "TEXT" &&
+      getPD(
+        node,
+        PD_INTER_DONE
+      ) !== "1"
+    ) {
+      const marker =
+        createTaskMarker(
+          "text"
+        );
+
+
+      setPD(
+        node,
+        PD_TASK_ID,
+        marker
+      );
+
+
+      plan.texts.push({
+        marker,
+
+        name:
+          safeName(node)
+      });
+    }
+
+
     for (
       const child of
       childrenOf(node)
     ) {
-      if (
-        safeType(child) ===
-          "INSTANCE" &&
-        getPD(
-          child,
-          PD_SKIP_DETACH
-        ) !== "1"
-      ) {
-        result.push({
-          node: child,
-          depth:
-            depth + 1
-        });
-      }
+      walk(
+        child,
+        depth + 1,
+        insideInstance
+      );
+    }
+
+
+    /*
+     * Container 후보는
+     * child를 먼저 탐색한 뒤 등록한다.
+     *
+     * 즉 깊은 Container가 먼저 처리된다.
+     */
+    if (
+      node === root
+    ) {
+      return;
+    }
+
+
+    /*
+     * Mask / Real Clip
+     */
+    if (
+      isContainer(node) &&
+      type !== "INSTANCE" &&
+      getPD(
+        node,
+        PD_SKIP_SCREENSHOT
+      ) !== "1" &&
+      (
+        containsMask(node) ||
+        actuallyClipsChildren(node)
+      )
+    ) {
+      const marker =
+        createTaskMarker(
+          "screenshot"
+        );
+
+
+      setPD(
+        node,
+        PD_TASK_ID,
+        marker
+      );
+
+
+      plan.screenshots.push({
+        marker,
+        depth,
+
+        name:
+          safeName(node)
+      });
+
+
+      /*
+       * Screenshot 대상은 Flatten 대상에서 제외.
+       */
+      return;
+    }
+
+
+    if (
+      isFlattenCandidate(node)
+    ) {
+      const marker =
+        createTaskMarker(
+          "flatten"
+        );
+
+
+      setPD(
+        node,
+        PD_TASK_ID,
+        marker
+      );
+
+
+      const task = {
+        marker,
+        depth,
+
+        name:
+          safeName(node),
+
+        type
+      };
+
 
       if (
-        safeType(child) !==
-        "INSTANCE"
+        isFastFlattenCandidate(
+          node
+        )
       ) {
-        walk(
-          child,
-          depth + 1
+        plan.fastFlatten.push(
+          task
+        );
+
+      } else {
+        plan.riskyFlatten.push(
+          task
         );
       }
     }
   }
 
 
-  walk(root, 0);
+  walk(
+    root,
+    0,
+    false
+  );
 
-  result.sort(
+
+  /*
+   * 깊은 것부터.
+   */
+  plan.instances.sort(
     (a, b) =>
       b.depth -
       a.depth
   );
 
-  return result;
+
+  plan.screenshots.sort(
+    (a, b) =>
+      b.depth -
+      a.depth
+  );
+
+
+  plan.fastFlatten.sort(
+    (a, b) =>
+      b.depth -
+      a.depth
+  );
+
+
+  plan.riskyFlatten.sort(
+    (a, b) =>
+      b.depth -
+      a.depth
+  );
+
+
+  return plan;
 }
 
 
-async function processInstances(
+/* =========================================================
+   INSTANCE BATCH
+========================================================= */
+
+async function processInstanceTasks(
   state,
+  tasks,
   stats
 ) {
-  for (
-    let pass = 0;
-    pass <
-      MAX_INSTANCE_PASSES;
-    pass++
-  ) {
-    const targets =
-      collectInstances(
-        state.root
-      );
+  await processBatchWithIsolation({
+    state,
+    tasks,
+    stats,
 
-    if (
-      targets.length === 0
-    ) {
-      break;
-    }
+    applyTask:
+      async (root, task) => {
 
-    let changedAny = false;
+        const node =
+          findByPluginData(
+            root,
+            PD_TASK_ID,
+            task.marker
+          );
 
 
-    for (
-      const item of
-      targets
-    ) {
-      const node =
-        item.node;
-
-      if (!isAlive(node)) {
-        continue;
-      }
-
-      const oldName =
-        safeName(node);
-
-      const marker =
-        `detach_${Date.now()}_${Math.random()}`;
-
-      setPD(
-        node,
-        PD_CURRENT_OP,
-        marker
-      );
+        if (
+          !node ||
+          safeType(node) !== "INSTANCE"
+        ) {
+          return {
+            root,
+            changed: false,
+            reason: "instance-missing"
+          };
+        }
 
 
-      const tx =
-        await runVisualTransaction(
-          state,
-
-          async root => {
-            const instance =
-              findByPluginData(
-                root,
-                PD_CURRENT_OP,
-                marker
-              );
-
-            if (
-              !instance ||
-              safeType(instance) !==
-                "INSTANCE"
-            ) {
-              return {
-                root,
-                changed: false,
-                reason:
-                  "instance-not-found"
-              };
-            }
-
-            const detached =
-              instance.detachInstance();
-
-            return {
-              root,
-              changed:
-                !!detached,
-              reason:
-                detached
-                  ? "detached"
-                  : "detach-failed"
-            };
-          }
-        );
+        const detached =
+          node.detachInstance();
 
 
-      if (
-        tx.accepted
-      ) {
+        return {
+          root,
+          changed:
+            !!detached,
+          reason:
+            detached
+              ? "detached"
+              : "detach-failed"
+        };
+      },
+
+    onAccepted:
+      async task => {
+
         stats.detachedInstances++;
-        changedAny = true;
+
 
         addReport(
           stats,
           "Instance Detach",
           "SUCCESS",
           null,
-          `"${oldName}"`
+          `"${task.name}" · Batch Verified`
         );
+      },
 
-      } else if (
-        tx.attempted
-      ) {
+    onRejected:
+      async (task, tx) => {
+
         stats.rejectedInstances++;
         stats.preservedAreas++;
+
 
         const restored =
           findByPluginData(
             state.root,
-            PD_CURRENT_OP,
-            marker
+            PD_TASK_ID,
+            task.marker
           );
+
 
         if (restored) {
           setPD(
@@ -2096,89 +2805,29 @@ async function processInstances(
             PD_SKIP_DETACH,
             "1"
           );
-
-          setPD(
-            restored,
-            PD_CURRENT_OP,
-            ""
-          );
         }
+
 
         addReport(
           stats,
           "Instance Detach",
           "REJECTED",
           restored,
-          tx.reason
+          tx.reason === "visual-changed"
+            ? "Detach 시 Render 변경"
+            : tx.reason
         );
-      }
-    }
+      },
 
-
-    if (!changedAny) {
-      break;
-    }
-  }
+    onSkipped:
+      async () => {}
+  });
 }
 
 
 /* =========================================================
-   SCREENSHOT / MASK / CLIP
+   SCREENSHOT
 ========================================================= */
-
-function collectScreenshotCandidates(
-  root
-) {
-  const result = [];
-
-  function walk(
-    node,
-    depth
-  ) {
-    for (
-      const child of
-      childrenOf(node)
-    ) {
-      walk(
-        child,
-        depth + 1
-      );
-
-      if (
-        isContainer(child) &&
-        safeType(child) !==
-          "INSTANCE" &&
-        getPD(
-          child,
-          PD_SKIP_SCREENSHOT
-        ) !== "1" &&
-        (
-          containsMask(child) ||
-          actuallyClipsChildren(
-            child
-          )
-        )
-      ) {
-        result.push({
-          node: child,
-          depth:
-            depth + 1
-        });
-      }
-    }
-  }
-
-  walk(root, 0);
-
-  result.sort(
-    (a, b) =>
-      b.depth -
-      a.depth
-  );
-
-  return result;
-}
-
 
 async function replaceWithScreenshot(
   root,
@@ -2187,6 +2836,7 @@ async function replaceWithScreenshot(
   const parent =
     safeParent(container);
 
+
   if (
     !parent ||
     !("children" in parent)
@@ -2194,15 +2844,14 @@ async function replaceWithScreenshot(
     return {
       root,
       changed: false,
-      reason:
-        "invalid-parent"
+      reason: "invalid-parent"
     };
   }
 
+
   const bounds =
-    safeRenderBounds(
-      container
-    );
+    safeRenderBounds(container);
+
 
   if (
     !bounds ||
@@ -2212,40 +2861,64 @@ async function replaceWithScreenshot(
     return {
       root,
       changed: false,
-      reason:
-        "invalid-render-bounds"
+      reason: "invalid-render-bounds"
     };
   }
+
 
   const index =
     parent.children.indexOf(
       container
     );
 
+
+  if (
+    index < 0
+  ) {
+    return {
+      root,
+      changed: false,
+      reason: "index-invalid"
+    };
+  }
+
+
   const bytes =
     await container.exportAsync({
       format: "PNG",
+
       constraint: {
         type: "SCALE",
         value: 1
       }
     });
 
+
   const image =
     figma.createImage(
       bytes
     );
 
+
   const rect =
     figma.createRectangle();
+
 
   rect.name =
     "screenshot";
 
+
   rect.resize(
-    bounds.width,
-    bounds.height
+    Math.max(
+      bounds.width,
+      0.01
+    ),
+    Math.max(
+      bounds.height,
+      0.01
+    )
   );
+
 
   rect.fills = [
     {
@@ -2256,6 +2929,7 @@ async function replaceWithScreenshot(
     }
   ];
 
+
   try {
     if (
       isAutoLayout(parent)
@@ -2265,10 +2939,12 @@ async function replaceWithScreenshot(
     }
   } catch (_) {}
 
+
   parent.insertChild(
     index,
     rect
   );
+
 
   rect.relativeTransform =
     absoluteToRelative(
@@ -2279,122 +2955,86 @@ async function replaceWithScreenshot(
       parent
     );
 
-  safeRemove(container);
+
+  safeRemove(
+    container
+  );
+
 
   return {
     root,
     changed: true,
-    reason:
-      "screenshot-created"
+    reason: "screenshot-created"
   };
 }
 
 
-async function processScreenshots(
+async function processScreenshotTasks(
   state,
+  tasks,
   stats
 ) {
-  for (
-    let pass = 0;
-    pass <
-      MAX_SCREENSHOT_PASSES;
-    pass++
-  ) {
-    const targets =
-      collectScreenshotCandidates(
-        state.root
-      );
+  await processBatchWithIsolation({
+    state,
+    tasks,
+    stats,
 
-    if (
-      targets.length === 0
-    ) {
-      break;
-    }
+    applyTask:
+      async (root, task) => {
 
-    let changedAny = false;
+        const node =
+          findByPluginData(
+            root,
+            PD_TASK_ID,
+            task.marker
+          );
 
 
-    for (
-      const item of
-      targets
-    ) {
-      const node =
-        item.node;
-
-      if (!isAlive(node)) {
-        continue;
-      }
-
-      const marker =
-        `shot_${Date.now()}_${Math.random()}`;
-
-      setPD(
-        node,
-        PD_CURRENT_OP,
-        marker
-      );
-
-      const oldName =
-        safeName(node);
+        if (!node) {
+          return {
+            root,
+            changed: false,
+            reason: "container-missing"
+          };
+        }
 
 
-      const tx =
-        await runVisualTransaction(
-          state,
-
-          async root => {
-            const current =
-              findByPluginData(
-                root,
-                PD_CURRENT_OP,
-                marker
-              );
-
-            if (!current) {
-              return {
-                root,
-                changed: false,
-                reason:
-                  "container-not-found"
-              };
-            }
-
-            return await replaceWithScreenshot(
-              root,
-              current
-            );
-          }
+        return await replaceWithScreenshot(
+          root,
+          node
         );
+      },
 
+    onAccepted:
+      async task => {
 
-      if (
-        tx.accepted
-      ) {
         stats.screenshotBaked++;
         stats.bakedAreas++;
 
-        changedAny = true;
 
         addReport(
           stats,
           "Mask / Clip",
           "SUCCESS",
           null,
-          `"${oldName}" → screenshot`
+          `"${task.name}" → screenshot`
         );
+      },
 
-      } else if (
-        tx.attempted
-      ) {
+    onRejected:
+      async (task, tx) => {
+
         stats.screenshotRejected++;
         stats.preservedAreas++;
+
 
         const restored =
           findByPluginData(
             state.root,
-            PD_CURRENT_OP,
-            marker
+            PD_TASK_ID,
+            task.marker
           );
+
 
         if (restored) {
           setPD(
@@ -2402,95 +3042,96 @@ async function processScreenshots(
             PD_SKIP_SCREENSHOT,
             "1"
           );
-
-          setPD(
-            restored,
-            PD_CURRENT_OP,
-            ""
-          );
         }
-      }
-    }
 
 
-    if (!changedAny) {
-      break;
-    }
-  }
+        addReport(
+          stats,
+          "Mask / Clip",
+          "REJECTED",
+          restored,
+          tx.reason === "visual-changed"
+            ? "Screenshot 변환 시 Render 변경"
+            : tx.reason
+        );
+      },
+
+    onSkipped:
+      async () => {}
+  });
 }
 
 
 /* =========================================================
-   GEOMETRY SNAPSHOT
+   GEOMETRY
 ========================================================= */
 
-function captureGeometry(node) {
-  const result = [];
-
-
-  function walk(current) {
-    if (!isAlive(current)) {
-      return;
-    }
-
-    const box =
-      safeBounds(current);
-
-    if (box) {
-      result.push({
-        node: current,
-        x: box.x,
-        y: box.y,
-        width:
-          box.width,
-        height:
-          box.height
-      });
-    }
-
-    for (
-      const child of
-      childrenOf(current)
-    ) {
-      walk(child);
-    }
-  }
+function captureDirectChildGeometry(
+  node
+) {
+  const result =
+    [];
 
 
   for (
     const child of
     childrenOf(node)
   ) {
-    walk(child);
+    const box =
+      safeBounds(child);
+
+
+    if (!box) {
+      continue;
+    }
+
+
+    result.push({
+      node: child,
+
+      x:
+        box.x,
+
+      y:
+        box.y,
+
+      width:
+        box.width,
+
+      height:
+        box.height
+    });
   }
+
 
   return result;
 }
 
 
 function geometryMatches(
-  snapshots
+  snapshot
 ) {
   for (
     const before of
-    snapshots
+    snapshot
   ) {
     if (
-      !isAlive(
-        before.node
-      )
+      !isAlive(before.node)
     ) {
       return false;
     }
+
 
     const after =
       safeBounds(
         before.node
       );
 
+
     if (!after) {
       return false;
     }
+
 
     if (
       Math.abs(
@@ -2521,24 +3162,68 @@ function geometryMatches(
     }
   }
 
+
   return true;
 }
 
 
 /* =========================================================
-   FAST FLATTEN CANDIDATE
+   FLATTEN CANDIDATE
 ========================================================= */
 
-function isFastFlattenCandidate(
-  node
-) {
+function isFlattenCandidate(node) {
   if (!isAlive(node)) {
     return false;
   }
 
+
   const type =
     safeType(node);
 
+
+  if (
+    type !== "FRAME" &&
+    type !== "GROUP" &&
+    type !== "COMPONENT"
+  ) {
+    return false;
+  }
+
+
+  if (
+    containsMask(node) ||
+    actuallyClipsChildren(node)
+  ) {
+    return false;
+  }
+
+
+  return (
+    getPD(
+      node,
+      PD_SKIP_FLATTEN
+    ) !== "1"
+  );
+}
+
+
+/* =========================================================
+   FAST FLATTEN
+========================================================= */
+
+function isFastFlattenCandidate(node) {
+  if (!isAlive(node)) {
+    return false;
+  }
+
+
+  const type =
+    safeType(node);
+
+
+  /*
+   * Component는 Fast path 사용 금지.
+   */
   if (
     type !== "GROUP" &&
     type !== "FRAME"
@@ -2546,34 +3231,44 @@ function isFastFlattenCandidate(
     return false;
   }
 
+
+  /*
+   * Container 자신의 Auto Layout
+   */
   if (
     isAutoLayout(node)
   ) {
     return false;
   }
 
+
+  /*
+   * Parent Auto Layout Flow
+   */
   if (
-    participatesInAutoLayout(
-      node
-    )
+    participatesInAutoLayout(node)
   ) {
     return false;
   }
+
 
   if (
     containsMask(node) ||
-    actuallyClipsChildren(
-      node
-    )
+    actuallyClipsChildren(node)
   ) {
     return false;
   }
 
+
+  /*
+   * Container 자체 시각 요소 없음
+   */
   if (
     hasOwnVisual(node)
   ) {
     return false;
   }
+
 
   try {
     if (
@@ -2584,42 +3279,57 @@ function isFastFlattenCandidate(
     }
   } catch (_) {}
 
+
   try {
     if (
       "rotation" in node &&
-      Math.abs(
-        node.rotation
-      ) > 0.001
+      Math.abs(node.rotation) >
+        0.001
     ) {
       return false;
     }
   } catch (_) {}
 
+
   try {
     if (
       "blendMode" in node &&
-      node.blendMode !==
-        "PASS_THROUGH" &&
-      node.blendMode !==
-        "NORMAL"
+      node.blendMode !== "PASS_THROUGH" &&
+      node.blendMode !== "NORMAL"
     ) {
       return false;
     }
   } catch (_) {}
+
 
   return true;
 }
 
 
 /* =========================================================
-   LOCAL FAST FLATTEN
+   FAST FLATTEN ONE
+
+   Root PNG 없음.
+   전체 Root Clone 없음.
+
+   Container local backup + Geometry만 검사.
 ========================================================= */
 
-async function fastFlattenContainer(
-  container,
+async function fastFlattenOne(
+  state,
+  task,
   stats
 ) {
+  const container =
+    findByPluginData(
+      state.root,
+      PD_TASK_ID,
+      task.marker
+    );
+
+
   if (
+    !container ||
     !isFastFlattenCandidate(
       container
     )
@@ -2627,8 +3337,10 @@ async function fastFlattenContainer(
     return false;
   }
 
+
   const parent =
     safeParent(container);
+
 
   if (
     !parent ||
@@ -2637,10 +3349,12 @@ async function fastFlattenContainer(
     return false;
   }
 
+
   const index =
     parent.children.indexOf(
       container
     );
+
 
   if (
     index < 0
@@ -2648,21 +3362,33 @@ async function fastFlattenContainer(
     return false;
   }
 
+
   const children =
     childrenOf(container);
 
+
+  /*
+   * Empty Container
+   */
   if (
     children.length === 0
   ) {
-    return safeRemove(
-      container
-    );
+    if (
+      safeRemove(container)
+    ) {
+      stats.fastFlatten++;
+      stats.flattenedContainers++;
+      stats.removedContainers++;
+
+      return true;
+    }
+
+    return false;
   }
 
 
   for (
-    const child of
-    children
+    const child of children
   ) {
     if (
       !await ensureSubtreeFontsLoaded(
@@ -2675,7 +3401,7 @@ async function fastFlattenContainer(
 
 
   const geometry =
-    captureGeometry(
+    captureDirectChildGeometry(
       container
     );
 
@@ -2684,10 +3410,9 @@ async function fastFlattenContainer(
     children.map(
       child => ({
         child,
+
         transform:
-          safeTransform(
-            child
-          )
+          safeTransform(child)
       })
     );
 
@@ -2703,35 +3428,43 @@ async function fastFlattenContainer(
 
 
   /*
-   * Container만 Backup.
-   * Root 전체 clone보다 훨씬 가볍다.
+   * Container local backup.
    */
+  const originalRelativeTransform =
+    container.relativeTransform;
+
+
   const backup =
     container.clone();
+
 
   figma.currentPage.appendChild(
     backup
   );
 
+
   backup.x +=
     CHECKPOINT_OFFSET_X;
 
 
-  const moved = [];
+  const moved =
+    [];
 
 
   try {
-    let insertIndex =
+    let insertion =
       index;
+
 
     for (
       const item of
       snapshots
     ) {
       parent.insertChild(
-        insertIndex,
+        insertion,
         item.child
       );
+
 
       item.child.relativeTransform =
         absoluteToRelative(
@@ -2739,11 +3472,13 @@ async function fastFlattenContainer(
           parent
         );
 
+
       moved.push(
         item.child
       );
 
-      insertIndex++;
+
+      insertion++;
     }
 
 
@@ -2752,6 +3487,9 @@ async function fastFlattenContainer(
     );
 
 
+    /*
+     * 위치/크기 보존 검사
+     */
     if (
       !geometryMatches(
         geometry
@@ -2780,10 +3518,11 @@ async function fastFlattenContainer(
   } catch (_) {
 
     /*
-     * Local rollback
+     * Fast path 실패 시 local 복구.
      */
     for (
-      const child of moved
+      const child of
+      moved
     ) {
       if (
         isAlive(child)
@@ -2800,95 +3539,17 @@ async function fastFlattenContainer(
         index,
         backup
       );
+
+
+      try {
+        backup.relativeTransform =
+          originalRelativeTransform;
+      } catch (_) {}
     }
 
 
     return false;
   }
-}
-
-
-/* =========================================================
-   GENERAL FLATTEN
-========================================================= */
-
-function isFlattenCandidate(node) {
-  if (!isAlive(node)) {
-    return false;
-  }
-
-  const type =
-    safeType(node);
-
-  if (
-    type !== "FRAME" &&
-    type !== "GROUP" &&
-    type !== "COMPONENT"
-  ) {
-    return false;
-  }
-
-  if (
-    containsMask(node) ||
-    actuallyClipsChildren(
-      node
-    )
-  ) {
-    return false;
-  }
-
-  return (
-    getPD(
-      node,
-      PD_SKIP_FLATTEN
-    ) !== "1"
-  );
-}
-
-
-function collectFlattenCandidates(
-  root
-) {
-  const result = [];
-
-
-  function walk(
-    node,
-    depth
-  ) {
-    for (
-      const child of
-      childrenOf(node)
-    ) {
-      walk(
-        child,
-        depth + 1
-      );
-
-      if (
-        isFlattenCandidate(
-          child
-        )
-      ) {
-        result.push({
-          node: child,
-          depth:
-            depth + 1
-        });
-      }
-    }
-  }
-
-
-  walk(root, 0);
-
-  result.sort(
-    (a, b) =>
-      b.depth -
-      a.depth
-  );
-
-  return result;
 }
 
 
@@ -2908,76 +3569,143 @@ function createVisualShell(
     return null;
   }
 
+
   const transform =
     safeTransform(source);
+
 
   if (!transform) {
     return null;
   }
 
+
   const rect =
     figma.createRectangle();
+
 
   rect.name =
     "shape";
 
+
   try {
     rect.resize(
-      source.width,
-      source.height
+      Math.max(
+        source.width,
+        0.01
+      ),
+
+      Math.max(
+        source.height,
+        0.01
+      )
     );
   } catch (_) {
+
     safeRemove(rect);
+
     return null;
   }
 
+
   try {
     if (
-      source.fills !==
-      figma.mixed
+      source.fills !== figma.mixed
     ) {
       rect.fills =
         source.fills;
     }
   } catch (_) {}
 
+
   try {
     if (
-      source.strokes !==
-      figma.mixed
+      source.strokes !== figma.mixed
     ) {
       rect.strokes =
         source.strokes;
     }
   } catch (_) {}
 
+
+  try {
+    rect.strokeWeight =
+      source.strokeWeight;
+
+    rect.strokeAlign =
+      source.strokeAlign;
+  } catch (_) {}
+
+
   try {
     rect.effects =
       source.effects;
   } catch (_) {}
+
 
   try {
     rect.opacity =
       source.opacity;
   } catch (_) {}
 
-  parent.insertChild(
-    index,
-    rect
-  );
 
-  rect.relativeTransform =
-    absoluteToRelative(
-      transform,
-      parent
+  try {
+    rect.blendMode =
+      source.blendMode;
+  } catch (_) {}
+
+
+  try {
+    rect.topLeftRadius =
+      source.topLeftRadius;
+
+    rect.topRightRadius =
+      source.topRightRadius;
+
+    rect.bottomLeftRadius =
+      source.bottomLeftRadius;
+
+    rect.bottomRightRadius =
+      source.bottomRightRadius;
+  } catch (_) {}
+
+
+  try {
+    if (
+      isAutoLayout(parent)
+    ) {
+      rect.layoutPositioning =
+        "ABSOLUTE";
+    }
+  } catch (_) {}
+
+
+  try {
+    parent.insertChild(
+      index,
+      rect
     );
 
-  return rect;
+
+    rect.relativeTransform =
+      absoluteToRelative(
+        transform,
+        parent
+      );
+
+
+    return rect;
+
+  } catch (_) {
+
+    safeRemove(rect);
+
+    return null;
+  }
 }
 
 
 /* =========================================================
-   NORMAL FLATTEN MUTATION
+   NORMAL FLATTEN
 ========================================================= */
 
 async function flattenContainerOneLevel(
@@ -2987,6 +3715,7 @@ async function flattenContainerOneLevel(
   const parent =
     safeParent(container);
 
+
   if (
     !parent ||
     !("children" in parent)
@@ -2994,32 +3723,52 @@ async function flattenContainerOneLevel(
     return {
       root,
       changed: false,
-      reason:
-        "invalid-parent"
+      reason: "invalid-parent"
     };
   }
+
 
   const index =
     parent.children.indexOf(
       container
     );
 
+
+  if (
+    index < 0
+  ) {
+    return {
+      root,
+      changed: false,
+      reason: "index-invalid"
+    };
+  }
+
+
   const children =
     childrenOf(container);
+
 
   if (
     children.length === 0
   ) {
     return {
       root,
+
       changed:
-        safeRemove(
-          container
-        ),
+        safeRemove(container),
+
       reason:
         "empty-container",
-      moved: 0,
-      removed: 1
+
+      moved:
+        0,
+
+      removed:
+        1,
+
+      shells:
+        0
     };
   }
 
@@ -3036,8 +3785,7 @@ async function flattenContainerOneLevel(
       return {
         root,
         changed: false,
-        reason:
-          "font-unavailable"
+        reason: "font-unavailable"
       };
     }
   }
@@ -3047,16 +3795,33 @@ async function flattenContainerOneLevel(
     children.map(
       child => ({
         child,
+
         transform:
           safeTransform(child)
       })
     );
 
 
-  let insertIndex =
+  if (
+    snapshots.some(
+      item =>
+        !item.transform
+    )
+  ) {
+    return {
+      root,
+      changed: false,
+      reason: "transform-unavailable"
+    };
+  }
+
+
+  let insertion =
     index;
 
-  let shells = 0;
+
+  let shells =
+    0;
 
 
   if (
@@ -3066,17 +3831,19 @@ async function flattenContainerOneLevel(
       createVisualShell(
         container,
         parent,
-        insertIndex
+        insertion
       );
 
+
     if (shell) {
-      insertIndex++;
+      insertion++;
       shells++;
     }
   }
 
 
-  let moved = 0;
+  let moved =
+    0;
 
 
   for (
@@ -3094,10 +3861,12 @@ async function flattenContainerOneLevel(
       }
     } catch (_) {}
 
+
     parent.insertChild(
-      insertIndex,
+      insertion,
       item.child
     );
+
 
     item.child.relativeTransform =
       absoluteToRelative(
@@ -3105,8 +3874,9 @@ async function flattenContainerOneLevel(
         parent
       );
 
+
     moved++;
-    insertIndex++;
+    insertion++;
   }
 
 
@@ -3118,160 +3888,139 @@ async function flattenContainerOneLevel(
   return {
     root,
     changed: true,
-    reason: "flattened",
+
+    reason:
+      "flattened",
+
     moved,
-    removed: 1,
+
+    removed:
+      1,
+
     shells
   };
 }
 
 
 /* =========================================================
-   PROCESS FLATTEN
+   PROCESS FLATTEN PLAN
 ========================================================= */
 
-async function processFlatten(
+async function processFlattenPlan(
   state,
+  plan,
   stats
 ) {
+  /* -------------------------------------------------------
+     FAST CANDIDATES
+     ------------------------------------------------------- */
+
+  const failedFast =
+    [];
+
+
   for (
-    let pass = 0;
-    pass <
-      MAX_FLATTEN_PASSES;
-    pass++
+    const task of
+    plan.fastFlatten
   ) {
-    const targets =
-      collectFlattenCandidates(
-        state.root
+    const success =
+      await fastFlattenOne(
+        state,
+        task,
+        stats
       );
 
-    if (
-      targets.length === 0
-    ) {
-      break;
+
+    if (success) {
+      addReport(
+        stats,
+        "Container Flatten",
+        "SUCCESS",
+        null,
+        `${task.type} "${task.name}" · Fast Geometry`
+      );
+
+    } else {
+      /*
+       * Fast path가 실패해도 포기하지 않는다.
+       * 위험 Batch로 넘긴다.
+       */
+      failedFast.push(
+        task
+      );
     }
-
-    let changedAny = false;
-
-
-    for (
-      const item of
-      targets
-    ) {
-      const node =
-        item.node;
-
-      if (!isAlive(node)) {
-        continue;
-      }
+  }
 
 
-      const oldName =
-        safeName(node);
+  const risky =
+    [
+      ...failedFast,
+      ...plan.riskyFlatten
+    ];
 
-      const oldType =
-        safeType(node);
+
+  /*
+   * 깊은 Container 먼저.
+   */
+  risky.sort(
+    (a, b) =>
+      b.depth -
+      a.depth
+  );
 
 
-      /* ===================================================
-         FAST GEOMETRY PATH
-      =================================================== */
+  /* -------------------------------------------------------
+     VISUAL BATCH
+     ------------------------------------------------------- */
 
-      if (
-        isFastFlattenCandidate(
-          node
-        )
-      ) {
-        const success =
-          await fastFlattenContainer(
-            node,
-            stats
+  await processBatchWithIsolation({
+    state,
+    tasks:
+      risky,
+    stats,
+
+    applyTask:
+      async (root, task) => {
+
+        const node =
+          findByPluginData(
+            root,
+            PD_TASK_ID,
+            task.marker
           );
 
-        if (success) {
-          changedAny = true;
 
-          addReport(
-            stats,
-            "Container Flatten",
-            "SUCCESS",
-            null,
-            `${oldType} "${oldName}" · Fast Geometry`
-          );
-
-          continue;
+        if (!node) {
+          return {
+            root,
+            changed: false,
+            reason: "container-missing"
+          };
         }
-      }
 
 
-      /* ===================================================
-         VISUAL PATH
-      =================================================== */
-
-      const marker =
-        `flatten_${Date.now()}_${Math.random()}`;
-
-
-      setPD(
-        node,
-        PD_CURRENT_OP,
-        marker
-      );
-
-
-      const tx =
-        await runVisualTransaction(
-          state,
-
-          async root => {
-            const current =
-              findByPluginData(
-                root,
-                PD_CURRENT_OP,
-                marker
-              );
-
-            if (!current) {
-              return {
-                root,
-                changed: false,
-                reason:
-                  "container-not-found"
-              };
-            }
-
-            return await flattenContainerOneLevel(
-              root,
-              current
-            );
-          }
+        return await flattenContainerOneLevel(
+          root,
+          node
         );
+      },
 
-
-      if (
-        tx.accepted
-      ) {
-        changedAny = true;
+    onAccepted:
+      async (task, result) => {
 
         stats.flattenedContainers++;
 
+
         stats.removedContainers +=
-          tx.data &&
-          tx.data.removed
-            ? tx.data.removed
-            : 0;
+          result.removed || 0;
+
 
         stats.movedLayers +=
-          tx.data &&
-          tx.data.moved
-            ? tx.data.moved
-            : 0;
+          result.moved || 0;
+
 
         stats.visualShells +=
-          tx.data &&
-          tx.data.shells
-            ? tx.data.shells
-            : 0;
+          result.shells || 0;
 
 
         addReport(
@@ -3279,21 +4028,24 @@ async function processFlatten(
           "Container Flatten",
           "SUCCESS",
           null,
-          `${oldType} "${oldName}" · Visual Verified`
+          `${task.type} "${task.name}" · Batch Verified`
         );
+      },
 
-      } else if (
-        tx.attempted
-      ) {
+    onRejected:
+      async (task, tx) => {
+
         stats.flattenRejected++;
         stats.preservedAreas++;
+
 
         const restored =
           findByPluginData(
             state.root,
-            PD_CURRENT_OP,
-            marker
+            PD_TASK_ID,
+            task.marker
           );
+
 
         if (restored) {
           setPD(
@@ -3301,29 +4053,23 @@ async function processFlatten(
             PD_SKIP_FLATTEN,
             "1"
           );
-
-          setPD(
-            restored,
-            PD_CURRENT_OP,
-            ""
-          );
         }
+
 
         addReport(
           stats,
           "Container Flatten",
           "REJECTED",
           restored,
-          tx.reason
+          tx.reason === "visual-changed"
+            ? "Flatten 시 Render 변경"
+            : tx.reason
         );
-      }
-    }
+      },
 
-
-    if (!changedAny) {
-      break;
-    }
-  }
+    onSkipped:
+      async () => {}
+  });
 }
 
 
@@ -3331,49 +4077,50 @@ async function processFlatten(
    ROOT → FRAME
 ========================================================= */
 
-async function convertRootToFrame(
-  root
-) {
+async function convertRootToFrame(root) {
   if (
-    safeType(root) ===
-    "FRAME"
+    safeType(root) === "FRAME"
   ) {
     return {
       root,
       changed: false,
-      reason:
-        "already-frame"
+      reason: "already-frame"
     };
   }
 
 
   if (
-    safeType(root) ===
-    "INSTANCE"
+    safeType(root) === "INSTANCE"
   ) {
     try {
       const detached =
         root.detachInstance();
 
+
       if (
         detached &&
         isAlive(detached)
       ) {
-        root = detached;
+        root =
+          detached;
       }
-    } catch (_) {}
+    } catch (_) {
+      return {
+        root,
+        changed: false,
+        reason: "root-instance-detach-failed"
+      };
+    }
   }
 
 
   if (
-    safeType(root) ===
-    "FRAME"
+    safeType(root) === "FRAME"
   ) {
     return {
       root,
       changed: true,
-      reason:
-        "root-instance-detached"
+      reason: "root-instance-detached"
     };
   }
 
@@ -3381,16 +4128,15 @@ async function convertRootToFrame(
   const parent =
     safeParent(root);
 
+
   if (
     !parent ||
-    safeType(parent) !==
-      "PAGE"
+    safeType(parent) !== "PAGE"
   ) {
     return {
       root,
       changed: false,
-      reason:
-        "root-not-page-child"
+      reason: "root-not-page-child"
     };
   }
 
@@ -3403,6 +4149,15 @@ async function convertRootToFrame(
 
   const transform =
     safeTransform(root);
+
+
+  if (!transform) {
+    return {
+      root,
+      changed: false,
+      reason: "transform-unavailable"
+    };
+  }
 
 
   const children =
@@ -3421,8 +4176,7 @@ async function convertRootToFrame(
       return {
         root,
         changed: false,
-        reason:
-          "font-unavailable"
+        reason: "font-unavailable"
       };
     }
   }
@@ -3432,6 +4186,7 @@ async function convertRootToFrame(
     children.map(
       child => ({
         child,
+
         transform:
           safeTransform(child)
       })
@@ -3442,9 +4197,16 @@ async function convertRootToFrame(
     figma.createFrame();
 
 
-  frame.name = "frame";
-  frame.fills = [];
-  frame.clipsContent = false;
+  frame.name =
+    "frame";
+
+
+  frame.fills =
+    [];
+
+
+  frame.clipsContent =
+    false;
 
 
   try {
@@ -3454,8 +4216,8 @@ async function convertRootToFrame(
 
 
   frame.resize(
-    root.width,
-    root.height
+    Math.max(root.width, 0.01),
+    Math.max(root.height, 0.01)
   );
 
 
@@ -3475,8 +4237,7 @@ async function convertRootToFrame(
   try {
     if (
       "fills" in root &&
-      root.fills !==
-        figma.mixed
+      root.fills !== figma.mixed
     ) {
       frame.fills =
         root.fills;
@@ -3487,12 +4248,23 @@ async function convertRootToFrame(
   try {
     if (
       "strokes" in root &&
-      root.strokes !==
-        figma.mixed
+      root.strokes !== figma.mixed
     ) {
       frame.strokes =
         root.strokes;
     }
+  } catch (_) {}
+
+
+  try {
+    frame.effects =
+      root.effects;
+  } catch (_) {}
+
+
+  try {
+    frame.opacity =
+      root.opacity;
   } catch (_) {}
 
 
@@ -3504,6 +4276,7 @@ async function convertRootToFrame(
       item.child
     );
 
+
     item.child.relativeTransform =
       absoluteToRelative(
         item.transform,
@@ -3512,15 +4285,50 @@ async function convertRootToFrame(
   }
 
 
-  safeRemove(root);
+  safeRemove(
+    root
+  );
 
 
   return {
     root: frame,
     changed: true,
-    reason:
-      "converted-to-frame"
+    reason: "converted-to-frame"
   };
+}
+
+
+/* =========================================================
+   SINGLE VISUAL TRANSACTION
+   Root Conversion / Ordering처럼 1회 작업용
+========================================================= */
+
+async function runSingleVisualTransaction(
+  state,
+  mutate,
+  stats
+) {
+  const fakeTask = {
+    marker:
+      createTaskMarker(
+        "single"
+      )
+  };
+
+
+  const tx =
+    await runVisualBatchTransaction(
+      state,
+      [fakeTask],
+
+      async root =>
+        await mutate(root),
+
+      stats
+    );
+
+
+  return tx;
 }
 
 
@@ -3529,32 +4337,29 @@ async function processRootConversion(
   stats
 ) {
   if (
-    safeType(state.root) ===
-    "FRAME"
+    safeType(state.root) === "FRAME"
   ) {
     return;
   }
 
 
   const tx =
-    await runVisualTransaction(
+    await runSingleVisualTransaction(
       state,
 
       async root =>
         await convertRootToFrame(
           root
-        )
+        ),
+
+      stats
     );
 
 
-  if (
-    tx.accepted
-  ) {
+  if (tx.accepted) {
     stats.rootConverted++;
 
-  } else if (
-    tx.attempted
-  ) {
+  } else if (tx.attempted) {
     stats.rootConversionRejected++;
     stats.preservedAreas++;
   }
@@ -3569,19 +4374,21 @@ const loadedInterStyles =
   new Set();
 
 
-function mapInterStyle(
-  sourceStyle
-) {
+function mapInterStyle(sourceStyle) {
   const value =
     String(
       sourceStyle || ""
-    ).toLowerCase();
+    )
+      .toLowerCase()
+      .replace(
+        /[_-]/g,
+        " "
+      );
 
 
   const italic =
-    value.includes(
-      "italic"
-    );
+    value.includes("italic") ||
+    value.includes("oblique");
 
 
   let style =
@@ -3589,24 +4396,56 @@ function mapInterStyle(
 
 
   if (
-    value.includes("black")
+    value.includes("black") ||
+    value.includes("heavy")
   ) {
-    style = "Black";
+    style =
+      "Black";
+
+  } else if (
+    value.includes("extra bold") ||
+    value.includes("extrabold")
+  ) {
+    style =
+      "Extra Bold";
+
+  } else if (
+    value.includes("semi bold") ||
+    value.includes("semibold")
+  ) {
+    style =
+      "Semi Bold";
 
   } else if (
     value.includes("bold")
   ) {
-    style = "Bold";
+    style =
+      "Bold";
 
   } else if (
     value.includes("medium")
   ) {
-    style = "Medium";
+    style =
+      "Medium";
+
+  } else if (
+    value.includes("extra light") ||
+    value.includes("extralight")
+  ) {
+    style =
+      "Extra Light";
 
   } else if (
     value.includes("light")
   ) {
-    style = "Light";
+    style =
+      "Light";
+
+  } else if (
+    value.includes("thin")
+  ) {
+    style =
+      "Thin";
   }
 
 
@@ -3632,19 +4471,23 @@ async function loadInterStyle(style) {
     return style;
   }
 
+
   try {
     await figma.loadFontAsync({
       family: "Inter",
       style
     });
 
+
     loadedInterStyles.add(
       style
     );
 
+
     return style;
 
   } catch (_) {}
+
 
   try {
     await figma.loadFontAsync({
@@ -3652,9 +4495,11 @@ async function loadInterStyle(style) {
       style: "Regular"
     });
 
+
     loadedInterStyles.add(
       "Regular"
     );
+
 
     return "Regular";
 
@@ -3668,11 +4513,11 @@ async function convertTextNodeToInter(
   node
 ) {
   if (
-    safeType(node) !==
-    "TEXT"
+    safeType(node) !== "TEXT"
   ) {
     return 0;
   }
+
 
   if (
     !await ensureTextFontsLoaded(
@@ -3683,216 +4528,219 @@ async function convertTextNodeToInter(
   }
 
 
-  const segments =
-    node.getStyledTextSegments(
-      ["fontName"]
-    );
-
-
-  let converted = 0;
-
-
-  for (
-    const segment of
-    segments
-  ) {
-    const old =
-      segment.fontName &&
-      segment.fontName !==
-        figma.mixed
-        ? segment.fontName.style
-        : "Regular";
-
-
-    const style =
-      await loadInterStyle(
-        mapInterStyle(old)
+  try {
+    const segments =
+      node.getStyledTextSegments(
+        ["fontName"]
       );
 
 
-    if (!style) {
-      continue;
-    }
+    let converted =
+      0;
 
 
-    if (
-      segment.fontName &&
-      segment.fontName !==
-        figma.mixed &&
-      segment.fontName.family ===
-        "Inter" &&
-      segment.fontName.style ===
-        style
+    for (
+      const segment of
+      segments
     ) {
-      continue;
+      const oldStyle =
+        segment.fontName &&
+        segment.fontName !== figma.mixed
+          ? segment.fontName.style
+          : "Regular";
+
+
+      const newStyle =
+        await loadInterStyle(
+          mapInterStyle(
+            oldStyle
+          )
+        );
+
+
+      if (!newStyle) {
+        continue;
+      }
+
+
+      if (
+        segment.fontName &&
+        segment.fontName !== figma.mixed &&
+        segment.fontName.family === "Inter" &&
+        segment.fontName.style === newStyle
+      ) {
+        continue;
+      }
+
+
+      node.setRangeFontName(
+        segment.start,
+        segment.end,
+        {
+          family: "Inter",
+          style: newStyle
+        }
+      );
+
+
+      converted++;
     }
 
 
-    node.setRangeFontName(
-      segment.start,
-      segment.end,
-      {
-        family: "Inter",
-        style
-      }
-    );
+    return converted;
 
-    converted++;
+  } catch (_) {
+    return 0;
   }
-
-
-  return converted;
 }
 
 
-async function processInter(
+/* =========================================================
+   FONT BATCH
+========================================================= */
+
+async function processTextTasks(
   state,
+  tasks,
   stats
 ) {
-  if (!convertFontToInter) {
+  if (
+    !convertFontToInter ||
+    tasks.length === 0
+  ) {
     return;
   }
 
 
-  while (true) {
-    let target = null;
+  await processBatchWithIsolation({
+    state,
+    tasks,
+    stats,
 
+    applyTask:
+      async (root, task) => {
 
-    function find(node) {
-      if (
-        target ||
-        !isAlive(node)
-      ) {
-        return;
-      }
-
-      if (
-        safeType(node) ===
-          "TEXT" &&
-        getPD(
-          node,
-          PD_INTER_DONE
-        ) !== "1"
-      ) {
-        target = node;
-        return;
-      }
-
-      for (
-        const child of
-        childrenOf(node)
-      ) {
-        find(child);
-
-        if (target) {
-          return;
-        }
-      }
-    }
-
-
-    find(state.root);
-
-
-    if (!target) {
-      break;
-    }
-
-
-    const marker =
-      `inter_${Date.now()}_${Math.random()}`;
-
-
-    setPD(
-      target,
-      PD_CURRENT_OP,
-      marker
-    );
-
-
-    const tx =
-      await runVisualTransaction(
-        state,
-
-        async root => {
-          const text =
-            findByPluginData(
-              root,
-              PD_CURRENT_OP,
-              marker
-            );
-
-          if (!text) {
-            return {
-              root,
-              changed: false,
-              reason:
-                "text-not-found"
-            };
-          }
-
-          const count =
-            await convertTextNodeToInter(
-              text
-            );
-
-          setPD(
-            text,
-            PD_INTER_DONE,
-            "1"
+        const text =
+          findByPluginData(
+            root,
+            PD_TASK_ID,
+            task.marker
           );
 
+
+        if (
+          !text ||
+          safeType(text) !== "TEXT"
+        ) {
           return {
             root,
-            changed:
-              count > 0,
-            converted:
-              count
+            changed: false,
+            reason: "text-missing"
           };
         }
-      );
 
 
-    if (
-      tx.accepted
-    ) {
-      stats.convertedTexts++;
+        const count =
+          await convertTextNodeToInter(
+            text
+          );
 
-      stats.convertedFontSegments +=
-        tx.data &&
-        tx.data.converted
-          ? tx.data.converted
-          : 0;
 
-    } else {
-      const restored =
-        findByPluginData(
-          state.root,
-          PD_CURRENT_OP,
-          marker
-        );
-
-      if (restored) {
         setPD(
-          restored,
+          text,
           PD_INTER_DONE,
           "1"
         );
 
-        setPD(
-          restored,
-          PD_CURRENT_OP,
-          ""
-        );
-      }
 
-      if (
-        tx.attempted
-      ) {
+        return {
+          root,
+
+          changed:
+            count > 0,
+
+          converted:
+            count,
+
+          reason:
+            count > 0
+              ? "font-converted"
+              : "already-inter-or-unavailable"
+        };
+      },
+
+    onAccepted:
+      async (task, result) => {
+
+        stats.convertedTexts++;
+
+        stats.convertedFontSegments +=
+          result.converted || 0;
+
+
+        addReport(
+          stats,
+          "Font → Inter",
+          "SUCCESS",
+          null,
+          `"${task.name}"`
+        );
+      },
+
+    onRejected:
+      async (task, tx) => {
+
         stats.failedFontConversions++;
+
+
+        const restored =
+          findByPluginData(
+            state.root,
+            PD_TASK_ID,
+            task.marker
+          );
+
+
+        if (restored) {
+          setPD(
+            restored,
+            PD_INTER_DONE,
+            "1"
+          );
+        }
+
+
+        addReport(
+          stats,
+          "Font → Inter",
+          "REJECTED",
+          restored,
+          tx.reason === "visual-changed"
+            ? "Inter 변경 시 Render 차이"
+            : tx.reason
+        );
+      },
+
+    onSkipped:
+      async (task) => {
+
+        const node =
+          findByPluginData(
+            state.root,
+            PD_TASK_ID,
+            task.marker
+          );
+
+
+        if (node) {
+          setPD(
+            node,
+            PD_INTER_DONE,
+            "1"
+          );
+        }
       }
-    }
-  }
+  });
 }
 
 
@@ -3900,10 +4748,29 @@ async function processInter(
    NAMING
 ========================================================= */
 
+function looksLikeScreenshotName(name) {
+  const value =
+    String(
+      name || ""
+    )
+      .toLowerCase();
+
+
+  return (
+    value.includes("screenshot") ||
+    value.includes("screen shot") ||
+    value.includes("스크린샷")
+  );
+}
+
+
 function looksLikeIconName(name) {
   const value =
-    String(name || "")
+    String(
+      name || ""
+    )
       .toLowerCase();
+
 
   return (
     value === "icon" ||
@@ -3911,9 +4778,8 @@ function looksLikeIconName(name) {
     value.includes("/icon") ||
     value.startsWith("ic_") ||
     value.includes("/ic_") ||
-    value.includes(
-      "material-symbol"
-    )
+    value.includes("material-symbol") ||
+    value.includes("material_symbol")
   );
 }
 
@@ -3922,6 +4788,7 @@ function looksLikeIcon(node) {
   const type =
     safeType(node);
 
+
   if (
     looksLikeIconName(
       safeName(node)
@@ -3929,6 +4796,7 @@ function looksLikeIcon(node) {
   ) {
     return true;
   }
+
 
   return (
     type === "VECTOR" ||
@@ -3943,11 +4811,13 @@ function looksLikeLine(node) {
   const type =
     safeType(node);
 
+
   if (
     type === "LINE"
   ) {
     return true;
   }
+
 
   if (
     type === "RECTANGLE" ||
@@ -3959,19 +4829,25 @@ function looksLikeLine(node) {
       return false;
     }
 
+
     try {
-      return (
-        (
-          node.width >= 8 &&
-          node.height <= 2
-        ) ||
-        (
-          node.height >= 8 &&
-          node.width <= 2
-        )
-      );
+      if (
+        node.width >= 8 &&
+        node.height <= 2
+      ) {
+        return true;
+      }
+
+
+      if (
+        node.height >= 8 &&
+        node.width <= 2
+      ) {
+        return true;
+      }
     } catch (_) {}
   }
+
 
   return false;
 }
@@ -3982,40 +4858,45 @@ function looksLikeScreenshot(
   root
 ) {
   if (
-    safeType(node) !==
-      "RECTANGLE" ||
+    safeType(node) !== "RECTANGLE" ||
     !hasImageFill(node)
   ) {
     return false;
   }
 
-  const name =
-    safeName(node)
-      .toLowerCase();
 
   if (
-    name.includes(
-      "screenshot"
-    ) ||
-    name.includes(
-      "스크린샷"
+    looksLikeScreenshotName(
+      safeName(node)
     )
   ) {
     return true;
   }
 
+
   try {
     return (
-      node.width /
-        root.width >=
-        0.7 &&
-      node.height /
-        root.height >=
-        0.5
+      root.width > 0 &&
+      root.height > 0 &&
+      node.width / root.width >= 0.7 &&
+      node.height / root.height >= 0.5
     );
   } catch (_) {
     return false;
   }
+}
+
+
+function looksLikeIPhone(node) {
+  const value =
+    safeName(node)
+      .toLowerCase();
+
+
+  return (
+    value.includes("iphone") ||
+    value.includes("i phone")
+  );
 }
 
 
@@ -4025,6 +4906,7 @@ function desiredLayerName(
 ) {
   const type =
     safeType(node);
+
 
   const current =
     safeName(node);
@@ -4040,6 +4922,9 @@ function desiredLayerName(
   }
 
 
+  /*
+   * Text
+   */
   if (
     type === "TEXT"
   ) {
@@ -4049,6 +4934,9 @@ function desiredLayerName(
   }
 
 
+  /*
+   * Image / Screenshot
+   */
   if (
     type === "RECTANGLE" &&
     hasImageFill(node)
@@ -4062,6 +4950,9 @@ function desiredLayerName(
   }
 
 
+  /*
+   * Line 먼저.
+   */
   if (
     looksLikeLine(node)
   ) {
@@ -4069,6 +4960,9 @@ function desiredLayerName(
   }
 
 
+  /*
+   * Icon
+   */
   if (
     looksLikeIcon(node)
   ) {
@@ -4076,6 +4970,9 @@ function desiredLayerName(
   }
 
 
+  /*
+   * Shape
+   */
   if (
     isShapeNode(node)
   ) {
@@ -4093,7 +4990,9 @@ function desiredLayerName(
   if (
     type === "FRAME"
   ) {
-    return "frame";
+    return looksLikeIPhone(node)
+      ? "iphone"
+      : "frame";
   }
 
 
@@ -4124,20 +5023,22 @@ function processNaming(
       return;
     }
 
+
     const wanted =
       desiredLayerName(
         node,
         root
       );
 
+
     if (
       wanted !== null &&
-      wanted !==
-        safeName(node)
+      wanted !== safeName(node)
     ) {
       try {
         node.name =
           wanted;
+
 
         stats.renamedLayers++;
 
@@ -4145,6 +5046,7 @@ function processNaming(
         stats.renameSkipped++;
       }
     }
+
 
     for (
       const child of
@@ -4154,25 +5056,31 @@ function processNaming(
     }
   }
 
+
   walk(root);
 }
 
 
 /* =========================================================
-   ORDER
+   LAYER ORDER
 ========================================================= */
 
 function getOrderBounds(node) {
   const box =
     safeBounds(node);
 
+
   if (!box) {
     return null;
   }
 
+
   return {
-    x: box.x,
-    y: box.y,
+    x:
+      box.x,
+
+    y:
+      box.y,
 
     width:
       box.width,
@@ -4181,12 +5089,10 @@ function getOrderBounds(node) {
       box.height,
 
     right:
-      box.x +
-      box.width,
+      box.x + box.width,
 
     bottom:
-      box.y +
-      box.height
+      box.y + box.height
   };
 }
 
@@ -4202,29 +5108,35 @@ function isSameVisualRow(
     return false;
   }
 
+
   if (
     Math.abs(
-      a.y - b.y
-    ) <=
-      ROW_Y_TOLERANCE
+      a.y -
+      b.y
+    ) <= ROW_Y_TOLERANCE
   ) {
     return true;
   }
 
-  const top =
+
+  const overlapTop =
     Math.max(
       a.y,
       b.y
     );
 
-  const bottom =
+
+  const overlapBottom =
     Math.min(
       a.bottom,
       b.bottom
     );
 
+
   const overlap =
-    bottom - top;
+    overlapBottom -
+    overlapTop;
+
 
   if (
     overlap <= 0
@@ -4232,12 +5144,18 @@ function isSameVisualRow(
     return false;
   }
 
-  return (
-    overlap >=
+
+  const minHeight =
     Math.min(
       a.height,
       b.height
-    ) * 0.5
+    );
+
+
+  return (
+    minHeight > 0 &&
+    overlap >=
+      minHeight * 0.5
   );
 }
 
@@ -4246,9 +5164,13 @@ function boundsOverlap(
   a,
   b
 ) {
-  if (!a || !b) {
+  if (
+    !a ||
+    !b
+  ) {
     return false;
   }
+
 
   return !(
     a.right <= b.x ||
@@ -4264,8 +5186,9 @@ function buildVisualRows(items) {
     [...items]
       .sort(
         (a, b) => {
+
           if (
-            !a.bounds ||
+            !a.bounds &&
             !b.bounds
           ) {
             return (
@@ -4274,16 +5197,29 @@ function buildVisualRows(items) {
             );
           }
 
+
+          if (!a.bounds) {
+            return 1;
+          }
+
+
+          if (!b.bounds) {
+            return -1;
+          }
+
+
           const dy =
             a.bounds.y -
             b.bounds.y;
 
+
           if (
             Math.abs(dy) >
-            ROW_Y_TOLERANCE
+              ROW_Y_TOLERANCE
           ) {
             return dy;
           }
+
 
           return (
             a.bounds.x -
@@ -4293,11 +5229,13 @@ function buildVisualRows(items) {
       );
 
 
-  const rows = [];
+  const rows =
+    [];
 
 
   for (
-    const item of sorted
+    const item of
+    sorted
   ) {
     if (!item.bounds) {
       rows.push({
@@ -4308,10 +5246,14 @@ function buildVisualRows(items) {
       continue;
     }
 
-    let row = null;
+
+    let row =
+      null;
+
 
     for (
-      const candidate of rows
+      const candidate of
+      rows
     ) {
       if (
         candidate.items.some(
@@ -4330,17 +5272,23 @@ function buildVisualRows(items) {
       }
     }
 
+
     if (!row) {
       row = {
         y:
           item.bounds.y,
-        items: []
+
+        items:
+          []
       };
+
 
       rows.push(row);
     }
 
+
     row.items.push(item);
+
 
     row.y =
       Math.min(
@@ -4350,19 +5298,28 @@ function buildVisualRows(items) {
   }
 
 
+  /*
+   * 위 → 아래
+   */
   rows.sort(
     (a, b) =>
-      a.y - b.y
+      a.y -
+      b.y
   );
 
 
+  /*
+   * 같은 줄 좌 → 우
+   */
   for (
-    const row of rows
+    const row of
+    rows
   ) {
     row.items.sort(
       (a, b) => {
+
         if (
-          !a.bounds ||
+          !a.bounds &&
           !b.bounds
         ) {
           return (
@@ -4371,9 +5328,46 @@ function buildVisualRows(items) {
           );
         }
 
-        return (
+
+        if (!a.bounds) {
+          return 1;
+        }
+
+
+        if (!b.bounds) {
+          return -1;
+        }
+
+
+        const dx =
           a.bounds.x -
-          b.bounds.x
+          b.bounds.x;
+
+
+        if (
+          Math.abs(dx) >
+          0.1
+        ) {
+          return dx;
+        }
+
+
+        const dy =
+          a.bounds.y -
+          b.bounds.y;
+
+
+        if (
+          Math.abs(dy) >
+          0.1
+        ) {
+          return dy;
+        }
+
+
+        return (
+          a.originalPanelIndex -
+          b.originalPanelIndex
         );
       }
     );
@@ -4384,12 +5378,15 @@ function buildVisualRows(items) {
 }
 
 
-function buildSafeDesiredPanelOrder(
-  root
-) {
+function buildSafeDesiredPanelOrder(root) {
   const children =
     childrenOf(root);
 
+
+  /*
+   * Layer panel 표시 순서는
+   * children 역순.
+   */
   const currentPanel =
     [...children]
       .reverse();
@@ -4399,16 +5396,21 @@ function buildSafeDesiredPanelOrder(
     currentPanel.map(
       (node, index) => ({
         node,
+
         bounds:
           getOrderBounds(node),
 
         originalPanelIndex:
           index,
 
-        desiredRank: 0,
+        desiredRank:
+          0,
+
         outgoing:
           new Set(),
-        indegree: 0
+
+        indegree:
+          0
       })
     );
 
@@ -4419,7 +5421,8 @@ function buildSafeDesiredPanelOrder(
     );
 
 
-  const visual = [];
+  const visual =
+    [];
 
 
   for (
@@ -4440,8 +5443,8 @@ function buildSafeDesiredPanelOrder(
 
 
   /*
-   * 겹치는 Layer는
-   * 기존 Z-order 보존
+   * 실제 겹치는 Layer는
+   * 기존 Z-order를 Constraint로 유지.
    */
   for (
     let i = 0;
@@ -4449,8 +5452,7 @@ function buildSafeDesiredPanelOrder(
     i++
   ) {
     for (
-      let j =
-        i + 1;
+      let j = i + 1;
       j < items.length;
       j++
     ) {
@@ -4463,6 +5465,7 @@ function buildSafeDesiredPanelOrder(
         items[i].outgoing.add(
           items[j]
         );
+
 
         items[j].indegree++;
       }
@@ -4477,22 +5480,44 @@ function buildSafeDesiredPanelOrder(
     );
 
 
-  const output = [];
+  const output =
+    [];
 
 
   while (
-    available.length
+    available.length > 0
   ) {
     available.sort(
-      (a, b) =>
-        a.desiredRank -
-        b.desiredRank
+      (a, b) => {
+
+        const rankDiff =
+          a.desiredRank -
+          b.desiredRank;
+
+
+        if (
+          rankDiff !== 0
+        ) {
+          return rankDiff;
+        }
+
+
+        return (
+          a.originalPanelIndex -
+          b.originalPanelIndex
+        );
+      }
     );
+
 
     const current =
       available.shift();
 
-    output.push(current);
+
+    output.push(
+      current
+    );
+
 
     for (
       const next of
@@ -4500,10 +5525,13 @@ function buildSafeDesiredPanelOrder(
     ) {
       next.indegree--;
 
+
       if (
         next.indegree === 0
       ) {
-        available.push(next);
+        available.push(
+          next
+        );
       }
     }
   }
@@ -4521,17 +5549,29 @@ function buildSafeDesiredPanelOrder(
 }
 
 
-async function reorderRootLayers(
-  root
-) {
+async function reorderRootLayers(root) {
+  if (
+    !isAlive(root)
+  ) {
+    return {
+      root,
+      changed: false,
+      reason: "root-missing"
+    };
+  }
+
+
+  /*
+   * Root Auto Layout에서는
+   * Child order가 실제 위치를 바꾼다.
+   */
   if (
     isAutoLayout(root)
   ) {
     return {
       root,
       changed: false,
-      reason:
-        "root-auto-layout"
+      reason: "root-auto-layout"
     };
   }
 
@@ -4539,14 +5579,14 @@ async function reorderRootLayers(
   const children =
     childrenOf(root);
 
+
   if (
     children.length <= 1
   ) {
     return {
       root,
       changed: false,
-      reason:
-        "single-layer"
+      reason: "single-layer"
     };
   }
 
@@ -4556,17 +5596,17 @@ async function reorderRootLayers(
       root
     );
 
+
   if (!panel) {
     return {
       root,
       changed: false,
-      reason:
-        "z-order-cycle"
+      reason: "z-order-cycle"
     };
   }
 
 
-  const desired =
+  const desiredChildren =
     panel
       .map(
         item =>
@@ -4575,7 +5615,8 @@ async function reorderRootLayers(
       .reverse();
 
 
-  let changed = false;
+  let changed =
+    false;
 
 
   for (
@@ -4585,9 +5626,11 @@ async function reorderRootLayers(
   ) {
     if (
       children[i] !==
-      desired[i]
+      desiredChildren[i]
     ) {
-      changed = true;
+      changed =
+        true;
+
       break;
     }
   }
@@ -4597,29 +5640,35 @@ async function reorderRootLayers(
     return {
       root,
       changed: false,
-      reason:
-        "already-ordered"
+      reason: "already-ordered"
     };
   }
 
 
   for (
     let i = 0;
-    i < desired.length;
+    i < desiredChildren.length;
     i++
   ) {
-    root.insertChild(
-      i,
-      desired[i]
-    );
+    const node =
+      desiredChildren[i];
+
+
+    if (
+      isAlive(node)
+    ) {
+      root.insertChild(
+        i,
+        node
+      );
+    }
   }
 
 
   return {
     root,
     changed: true,
-    reason:
-      "ordered"
+    reason: "ordered"
   };
 }
 
@@ -4629,13 +5678,15 @@ async function processOrder(
   stats
 ) {
   const tx =
-    await runVisualTransaction(
+    await runSingleVisualTransaction(
       state,
 
       async root =>
         await reorderRootLayers(
           root
-        )
+        ),
+
+      stats
     );
 
 
@@ -4643,6 +5694,7 @@ async function processOrder(
     tx.accepted
   ) {
     stats.orderChanged++;
+
 
     addReport(
       stats,
@@ -4657,12 +5709,15 @@ async function processOrder(
   ) {
     stats.orderRejected++;
 
+
     addReport(
       stats,
       "Layer Order",
       "REJECTED",
       state.root,
-      tx.reason
+      tx.reason === "visual-changed"
+        ? "Z-order 변경 감지 · 기존 순서 유지"
+        : tx.reason
     );
   }
 }
@@ -4673,7 +5728,9 @@ async function processOrder(
 ========================================================= */
 
 function countAllLayers(root) {
-  let count = 0;
+  let count =
+    0;
+
 
   function walk(node) {
     for (
@@ -4681,11 +5738,14 @@ function countAllLayers(root) {
       childrenOf(node)
     ) {
       count++;
+
       walk(child);
     }
   }
 
+
   walk(root);
+
 
   return count;
 }
@@ -4697,7 +5757,8 @@ function analyzeScreen(root) {
       root
     );
 
-  return {
+
+  const result = {
     total:
       1 +
       countAllLayers(root),
@@ -4707,9 +5768,143 @@ function analyzeScreen(root) {
 
     garbageItems,
 
-    rootType:
-      safeType(root)
+    containers:
+      0,
+
+    instances:
+      0,
+
+    autoLayouts:
+      0,
+
+    masks:
+      0,
+
+    clips:
+      0,
+
+    text:
+      0,
+
+    nonInterText:
+      0,
+
+    icons:
+      0,
+
+    lines:
+      0,
+
+    bakeCandidates:
+      0
   };
+
+
+  function walk(node) {
+    if (!isAlive(node)) {
+      return;
+    }
+
+
+    if (
+      isContainer(node) &&
+      node !== root
+    ) {
+      result.containers++;
+    }
+
+
+    if (
+      safeType(node) === "INSTANCE"
+    ) {
+      result.instances++;
+    }
+
+
+    if (
+      isAutoLayout(node)
+    ) {
+      result.autoLayouts++;
+    }
+
+
+    if (
+      isMaskNode(node)
+    ) {
+      result.masks++;
+    }
+
+
+    if (
+      isContainer(node) &&
+      actuallyClipsChildren(node)
+    ) {
+      result.clips++;
+    }
+
+
+    if (
+      safeType(node) === "TEXT"
+    ) {
+      result.text++;
+
+
+      try {
+        const segments =
+          node.getStyledTextSegments(
+            ["fontName"]
+          );
+
+
+        if (
+          segments.some(
+            segment =>
+              !segment.fontName ||
+              segment.fontName === figma.mixed ||
+              segment.fontName.family !== "Inter"
+          )
+        ) {
+          result.nonInterText++;
+        }
+
+      } catch (_) {
+        result.nonInterText++;
+      }
+    }
+
+
+    if (
+      looksLikeIcon(node)
+    ) {
+      result.icons++;
+    }
+
+
+    if (
+      looksLikeLine(node)
+    ) {
+      result.lines++;
+    }
+
+
+    for (
+      const child of
+      childrenOf(node)
+    ) {
+      walk(child);
+    }
+  }
+
+
+  walk(root);
+
+
+  result.bakeCandidates =
+    result.masks +
+    result.clips;
+
+
+  return result;
 }
 
 
@@ -4721,21 +5916,38 @@ function commitWorkingRoot(
   original,
   working
 ) {
-  const parent =
-    safeParent(original);
-
   if (
-    !parent ||
-    safeType(parent) !==
-      "PAGE"
+    !isAlive(original) ||
+    !isAlive(working)
   ) {
     return null;
   }
+
+
+  const parent =
+    safeParent(original);
+
+
+  if (
+    !parent ||
+    safeType(parent) !== "PAGE"
+  ) {
+    return null;
+  }
+
 
   const index =
     parent.children.indexOf(
       original
     );
+
+
+  if (
+    index < 0
+  ) {
+    return null;
+  }
+
 
   working.x =
     original.x;
@@ -4743,12 +5955,17 @@ function commitWorkingRoot(
   working.y =
     original.y;
 
+
   parent.insertChild(
     index,
     working
   );
 
-  safeRemove(original);
+
+  safeRemove(
+    original
+  );
+
 
   return working;
 }
@@ -4777,7 +5994,33 @@ async function processRoot(
   }
 
 
+  const parent =
+    safeParent(
+      originalRoot
+    );
+
+
+  if (
+    !parent ||
+    safeType(parent) !== "PAGE"
+  ) {
+    return {
+      success: false,
+      root:
+        originalRoot,
+      stats,
+      fatalReason:
+        "Screen must be a direct Page child."
+    };
+  }
+
+
+  /* =====================================================
+     WORKING COPY
+  ===================================================== */
+
   let state;
+
 
   try {
     state =
@@ -4792,10 +6035,15 @@ async function processRoot(
         originalRoot,
       stats,
       fatalReason:
-        error.message
+        error.message ||
+        String(error)
     };
   }
 
+
+  /* =====================================================
+     1. GARBAGE
+  ===================================================== */
 
   markSelectedGarbage(
     originalRoot,
@@ -4803,66 +6051,168 @@ async function processRoot(
   );
 
 
-  /* 1. Garbage */
   await processGarbage(
     state,
     stats
   );
 
 
-  /* 2. Root Frame */
+  /* =====================================================
+     2. ROOT → FRAME
+  ===================================================== */
+
   await processRootConversion(
     state,
     stats
   );
 
 
-  /* 3. Instance */
-  await processInstances(
+  /* =====================================================
+     3. PLAN #1
+     Tree 전체 Scan
+  ===================================================== */
+
+  let plan =
+    buildExecutionPlan(
+      state.root,
+      stats
+    );
+
+
+  /* =====================================================
+     4. INSTANCE DETACH
+     Batch + Binary
+  ===================================================== */
+
+  for (
+    let round = 0;
+    round < MAX_INSTANCE_ROUNDS;
+    round++
+  ) {
+    if (
+      plan.instances.length === 0
+    ) {
+      break;
+    }
+
+
+    await processInstanceTasks(
+      state,
+      plan.instances,
+      stats
+    );
+
+
+    /*
+     * Instance를 Detach했을 때만
+     * 내부 Layer가 새롭게 탐색 가능해지므로
+     * Plan을 한 번 갱신한다.
+     */
+    if (
+      round <
+      MAX_INSTANCE_ROUNDS - 1
+    ) {
+      plan =
+        buildExecutionPlan(
+          state.root,
+          stats
+        );
+    }
+  }
+
+
+  /* =====================================================
+     5. FINAL STRUCTURE PLAN
+     Instance 이후 딱 한 번 재탐색
+  ===================================================== */
+
+  plan =
+    buildExecutionPlan(
+      state.root,
+      stats
+    );
+
+
+  /* =====================================================
+     6. MASK / CLIP
+     Batch + Binary
+  ===================================================== */
+
+  await processScreenshotTasks(
     state,
+    plan.screenshots,
     stats
   );
 
 
-  /* 4. Mask / Clip */
-  await processScreenshots(
+  /* =====================================================
+     7. FLATTEN
+     Fast Geometry +
+     Batch / Binary
+  ===================================================== */
+
+  await processFlattenPlan(
     state,
+    plan,
     stats
   );
 
 
-  /* 5. Flatten */
-  await processFlatten(
+  /* =====================================================
+     8. FONT
+     선택된 경우만 Batch + Binary
+  ===================================================== */
+
+  await processTextTasks(
     state,
+    plan.texts,
     stats
   );
 
 
-  /* 6. Font */
-  await processInter(
-    state,
-    stats
-  );
+  /* =====================================================
+     9. NAMING
+     PNG 검사 없음
+  ===================================================== */
 
-
-  /* 7. Naming */
   processNaming(
     state.root,
     stats
   );
 
 
-  /* 8. Order */
+  addReport(
+    stats,
+    "Layer Naming",
+    "SUCCESS",
+    state.root,
+    `${stats.renamedLayers} layers renamed`
+  );
+
+
+  /* =====================================================
+     10. ORDER
+     Visual check 딱 1회
+  ===================================================== */
+
   await processOrder(
     state,
     stats
   );
 
 
+  /* =====================================================
+     11. INTERNAL DATA CLEAN
+  ===================================================== */
+
   clearInternalPluginData(
     state.root
   );
 
+
+  /* =====================================================
+     12. COMMIT
+  ===================================================== */
 
   const committed =
     commitWorkingRoot(
@@ -4876,11 +6226,15 @@ async function processRoot(
       state.root
     );
 
+
     return {
       success: false,
+
       root:
         originalRoot,
+
       stats,
+
       fatalReason:
         "Commit failed"
     };
@@ -4895,19 +6249,26 @@ async function processRoot(
 
   return {
     success: true,
+
     root:
       committed,
-    stats
+
+    stats,
+
+    fatalReason:
+      null
   };
 }
 
 
 /* =========================================================
-   ANALYZED ROOT
+   ANALYZED ROOTS
 ========================================================= */
 
 async function getAnalyzedRoots() {
-  const result = [];
+  const result =
+    [];
+
 
   for (
     const id of
@@ -4918,6 +6279,7 @@ async function getAnalyzedRoots() {
         await figma.getNodeByIdAsync(
           id
         );
+
 
       if (
         node &&
@@ -4930,39 +6292,45 @@ async function getAnalyzedRoots() {
     } catch (_) {}
   }
 
+
   return result;
 }
 
 
 /* =========================================================
-   UI
+   UI MESSAGES
 ========================================================= */
 
 figma.ui.onmessage =
 async msg => {
 
 
-  /* CLOSE */
+  /* =====================================================
+     CLOSE
+  ===================================================== */
 
   if (
     msg.type === "close"
   ) {
     figma.closePlugin();
+
     return;
   }
 
 
-  /* VIEW GARBAGE */
+  /* =====================================================
+     GARBAGE VIEW
+  ===================================================== */
 
   if (
-    msg.type ===
-    "select-layer"
+    msg.type === "select-layer"
   ) {
     try {
       const node =
         await figma.getNodeByIdAsync(
           msg.nodeId
         );
+
 
       if (
         !node ||
@@ -4972,8 +6340,14 @@ async msg => {
         return;
       }
 
+
+      /*
+       * Selection이 바뀌어도
+       * analyzedRootIds는 유지.
+       */
       figma.currentPage.selection =
         [node];
+
 
       figma.viewport
         .scrollAndZoomIntoView(
@@ -4982,11 +6356,14 @@ async msg => {
 
     } catch (_) {}
 
+
     return;
   }
 
 
-  /* ANALYZE */
+  /* =====================================================
+     ANALYZE
+  ===================================================== */
 
   if (
     msg.type === "analyze"
@@ -5005,9 +6382,11 @@ async msg => {
     ) {
       figma.ui.postMessage({
         type: "error",
+
         message:
-          "정리할 Screen을 선택해주세요."
+          "정리할 최상위 Screen Layer를 선택해주세요."
       });
+
 
       return;
     }
@@ -5020,13 +6399,17 @@ async msg => {
     ) {
       figma.ui.postMessage({
         type: "error",
+
         message:
-`지원 타입:
+`지원하지 않는 Layer가 포함되어 있습니다.
+
+지원 타입
 • Frame
 • Group
 • Component
 • Instance`
       });
+
 
       return;
     }
@@ -5051,8 +6434,7 @@ async msg => {
             safeType(root),
 
           willConvertToFrame:
-            safeType(root) !==
-              "FRAME",
+            safeType(root) !== "FRAME",
 
           ...analyzeScreen(
             root
@@ -5066,11 +6448,14 @@ async msg => {
       results
     });
 
+
     return;
   }
 
 
-  /* CLEAN */
+  /* =====================================================
+     CLEAN
+  ===================================================== */
 
   if (
     msg.type === "clean"
@@ -5104,9 +6489,11 @@ async msg => {
     ) {
       figma.ui.postMessage({
         type: "error",
+
         message:
-          "Analyze했던 Screen을 찾을 수 없습니다."
+          "Analyze했던 Screen을 찾을 수 없습니다. Screen을 다시 선택한 뒤 Analyze Screen을 실행해주세요."
       });
+
 
       return;
     }
@@ -5120,13 +6507,11 @@ async msg => {
 
 
     renameTextToHyphen =
-      msg.renameTextToHyphen ===
-      true;
+      msg.renameTextToHyphen === true;
 
 
     convertFontToInter =
-      msg.convertFontToInter ===
-      true;
+      msg.convertFontToInter === true;
 
 
     figma.ui.postMessage({
@@ -5134,7 +6519,8 @@ async msg => {
     });
 
 
-    const resultRoots = [];
+    const resultRoots =
+      [];
 
 
     const total = {
@@ -5182,13 +6568,19 @@ async msg => {
 
       finalLayers: 0,
 
+      treeScans: 0,
+      visualBatchChecks: 0,
+      binarySplits: 0,
+
       report: [],
+
       failureReasons: []
     };
 
 
     for (
-      const root of roots
+      const root of
+      roots
     ) {
       try {
         const result =
@@ -5199,7 +6591,9 @@ async msg => {
 
         if (
           result.root &&
-          isAlive(result.root)
+          isAlive(
+            result.root
+          )
         ) {
           resultRoots.push(
             result.root
@@ -5215,12 +6609,14 @@ async msg => {
         } else {
           total.rolledBack++;
 
+
           if (
             result.fatalReason
           ) {
             total.failureReasons.push({
               screen:
                 safeName(root),
+
               reason:
                 result.fatalReason
             });
@@ -5244,10 +6640,10 @@ async msg => {
             continue;
           }
 
+
           if (
             key in total &&
-            typeof total[key] ===
-              "number"
+            typeof total[key] === "number"
           ) {
             total[key] +=
               result.stats[key];
@@ -5257,13 +6653,18 @@ async msg => {
       } catch (error) {
         total.rolledBack++;
 
+
         total.failureReasons.push({
           screen:
             safeName(root),
+
           reason:
-            error.message ||
-            String(error)
+            error &&
+            error.message
+              ? error.message
+              : String(error)
         });
+
 
         if (
           isAlive(root)
@@ -5276,88 +6677,129 @@ async msg => {
 
     const aliveRoots =
       resultRoots.filter(
-        node =>
-          isAlive(node)
+        root =>
+          isAlive(root)
       );
 
 
     if (
-      aliveRoots.length
+      aliveRoots.length > 0
     ) {
       figma.currentPage.selection =
         aliveRoots;
+
 
       figma.viewport
         .scrollAndZoomIntoView(
           aliveRoots
         );
 
+
       analyzedRootIds =
         aliveRoots
           .map(
-            node =>
-              safeId(node)
+            root =>
+              safeId(root)
           )
           .filter(Boolean);
     }
 
 
+    /* =====================================================
+       COMPLETE
+    ===================================================== */
+
     figma.ui.postMessage({
       type: "complete",
-      result:
-        total
+      result: total
     });
 
 
+    /* =====================================================
+       PERFORMANCE REPORT
+    ===================================================== */
+
     console.log(
       "========================================"
     );
 
     console.log(
-      "SCREEN LAYER CLEANER REPORT"
+      "SCREEN LAYER CLEANER"
     );
 
     console.log(
       "========================================"
     );
+
+
+    console.log(
+      "Tree Scans:",
+      total.treeScans
+    );
+
+
+    console.log(
+      "Visual Batch Checks:",
+      total.visualBatchChecks
+    );
+
+
+    console.log(
+      "Binary Splits:",
+      total.binarySplits
+    );
+
 
     console.log(
       "Fast Garbage:",
       total.fastGarbage
     );
 
+
     console.log(
-      "Garbage Deleted:",
+      "Deleted Garbage:",
       total.removedGarbage
     );
+
 
     console.log(
       "Fast Flatten:",
       total.fastFlatten
     );
 
+
     console.log(
-      "Flatten Total:",
+      "Flattened:",
       total.flattenedContainers
     );
 
+
     console.log(
-      "Instance Detached:",
+      "Detached Instances:",
       total.detachedInstances
     );
 
+
     console.log(
-      "Screenshot:",
+      "Preserved Instances:",
+      total.rejectedInstances
+    );
+
+
+    console.log(
+      "Screenshot Bake:",
       total.screenshotBaked
     );
 
+
     console.log(
-      "Renamed:",
+      "Renamed Layers:",
       total.renamedLayers
     );
 
+
     console.log(
-      "Order:",
+      "Layer Order:",
       total.orderChanged
     );
 
@@ -5366,12 +6808,40 @@ async msg => {
       console.table(
         total.report
       );
-    } catch (_) {}
+    } catch (_) {
+      console.log(
+        total.report
+      );
+    }
 
 
-    figma.notify(
-      `Cleanup 완료 · Garbage ${total.removedGarbage} · Flatten ${total.flattenedContainers} · Fast ${total.fastGarbage + total.fastFlatten}`
-    );
+    if (
+      total.failureReasons.length > 0
+    ) {
+      console.error(
+        "Fatal Failures:",
+        total.failureReasons
+      );
+    }
+
+
+    /* =====================================================
+       NOTIFY
+    ===================================================== */
+
+    if (
+      total.rolledBack === 0
+    ) {
+      figma.notify(
+        `Cleanup 완료 · Garbage ${total.removedGarbage} · Flatten ${total.flattenedContainers} · Batch Check ${total.visualBatchChecks}`
+      );
+
+    } else {
+      figma.notify(
+        `Cleanup 완료 · ${total.committed}개 적용 / ${total.rolledBack}개 원본 유지`
+      );
+    }
+
 
     return;
   }
